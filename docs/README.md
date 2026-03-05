@@ -19,11 +19,11 @@ pip install chi-som
 For the CUDA compute backend, `numba-cuda` is required.
 On systems running CUDA, ChI-SOM can be installed with CUDA support via
 ```sh
-pip install chi-som[cu12]
+pip install 'chi-som[cu12]'
 ```
 for CUDA13 or 
 ```sh
-pip install chi-som[cu13]
+pip install 'chi-som[cu13]'
 ```
 for CUDA12  
   
@@ -36,6 +36,7 @@ This software may be considered to be in beta stage. While the user-facing API i
 
 ```python
 import numpy as np
+import pandas as pd
 
 from chisom import Som, start_chisom_viewer
 from chisom.utils import decay_linear, lattice_size
@@ -76,7 +77,7 @@ bmus, qe = som.predict(data)
 
 
 # Using the GUI needs information to overlay on the datapoints
-dataset = pd.from_dict(
+dataset = pd.DataFrame.from_dict(
     {"Type:": ["A"] * len(data)}
 )
 
