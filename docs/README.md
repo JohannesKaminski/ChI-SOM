@@ -29,6 +29,9 @@ for CUDA12
   
 Please refer to the [numba-cuda](https://nvidia.github.io/numba-cuda/) documentation for more complex setups.
 
+## Documentation
+Documentation for ChI-SOM is available at <https://kochgroup.github.io/ChI-SOM/>
+
 ## CAVEAT
 This software may be considered to be in beta stage. While the user-facing API is expected to remain stable up to a 2.0 release, the internal API might change at any release and can not be considered stable.  
 
