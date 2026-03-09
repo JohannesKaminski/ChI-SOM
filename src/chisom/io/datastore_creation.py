@@ -130,12 +130,16 @@ def _parse_file_hierarchy(
 
     parsed_hierarchy = {}
     for k in file_hierarchy:
-        current_path = file_hierarchy[k]
+        current_pathlist = file_hierarchy[k]
+
+        if not isinstance(current_pathlist, list):
+            raise TypeError(f"Input node {current_pathlist} is not of type 'list'")
+
         parsed_path = []
 
-        for entry in current_path:
+        for entry in current_pathlist:
             try:
-                p = pl.Path(entry)
+                p = pl.Path(entry).absolute()
             except Exception:
                 continue
 
@@ -150,7 +154,9 @@ def _parse_file_hierarchy(
                 parsed_path.append(str(p.absolute()))
 
         if len(parsed_path) == 0:
-            raise FileNotFoundError(f"For class '{k} no file was found!")
+            raise FileNotFoundError(
+                f"File with absolute path {p} for class '{k} was not found!"
+            )
 
         parsed_hierarchy[k] = parsed_path
 
@@ -168,23 +174,23 @@ def _parse_output_path(out_path: str, file_extentions: list[str]) -> str:
 
     elif p.is_file():
         answer_challenge = input(
-            "File already exists. Do you want to overwrite? (y/n):\n"
+            f"File at {p} already exists. Do you want to overwrite? (y/n):\n"
         )
 
         if answer_challenge.lower() != "y":
-            raise FileExistsError("File already exists")
+            raise FileExistsError(f"File at {p} already exists")
         else:
             out_file = p.absolute()
     else:
         if not p.parent.is_dir():
-            raise FileNotFoundError("Path does not exist!")
+            raise FileNotFoundError(f"Path {p} does not exist!")
 
         if not p.suffix:
             out_file = p.absolute() / ".zarr"
         elif p.suffix in file_extentions:
             out_file = p.absolute()
         else:
-            raise ValueError("Wrong file extention!")
+            raise ValueError(f"Wrong file extention for file with path {p}!")
 
     return str(out_file)
 
@@ -598,8 +604,8 @@ class HDF5Creator(StoreCreator):
         file_hierarchy: FileList,
         out_path: str,
         leaf_map: LeafMap,
+        sep: str,
         skip_lines: int = 0,
-        sep: str = "\t",
     ) -> None:
         file_hierarchy = _parse_file_hierarchy(file_hierarchy, self.file_extensions)
         out_path = _parse_output_path(out_path, [".h5", ".hdf5"])
