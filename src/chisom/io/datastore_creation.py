@@ -617,6 +617,22 @@ class HDF5Creator(StoreCreator):
         sep: str,
         skip_lines: int = 0,
     ) -> None:
+        """
+        Run creation of HDF5 storage file
+
+        Parameters
+        ----------
+        file_hierarchy :
+            Dictionary of files to parse, see How-To Guides.
+        out_path :
+            Output path for the HDF5 files.
+        leaf_map :
+            Dictionary of file structure and datatypes, see How-To Guides.
+        sep :
+            Column seperator.
+        skip_lines :
+            Number of lines to skip at the beginning of file, e.g. for headers.
+        """
         file_hierarchy = _parse_file_hierarchy(file_hierarchy, self.file_extensions)
         out_path = _parse_output_path(out_path, [".h5", ".hdf5"])
         ranges_dict_prototype = self._create_ranges_dict(leaf_map.copy())
