@@ -1,5 +1,5 @@
 from collections.abc import Callable
-from typing import Dict, List, Set, Tuple, TypeVar
+from typing import Dict, List, Protocol, Set, Tuple, TypeVar, runtime_checkable
 
 import numpy as np
 import tables
@@ -27,7 +27,8 @@ class rdFingerprintGenerator:
     def GetFingerprintAsNumPy(self, mol: Mol) -> NDArray[np.uint8]: ...
 
 
-class DataLoader:
+@runtime_checkable
+class DataLoader(Protocol):
     collate_fn: Callable
 
     def __init__(
