@@ -9,7 +9,7 @@ EPOCHS = 30
 ALPHA = 0.5
 
 # Create a ChemDataset object that from a HDF5 file, that is compatible with the pytorch DataLoader
-ds = HDF5Dataset("tests/testdata/VDR.h5", ["active"])
+ds = HDF5Dataset("tests/VDR.h5", ["active"])
 
 # Create a DataLoader object that will be used to train the SOM
 dl = DataLoader(
@@ -53,10 +53,10 @@ dl = DataLoader(
 
 # Calculate the U-map for the current state of the notebook
 umx = som.get_umatrix()
-np.save("tests/testdata/umx.npy", umx)
+np.save("tests/umx.npy", umx)
 
 # Predict the best matching units and quantization errors for all data points
 bmus, qe = som.predict(dl)
-np.save("tests/testdata/bmus.npy", bmus)
+np.save("tests/bmus.npy", bmus)
 
 start_chisom_viewer(umx, bmus, ds, structure_info_column="smiles")
