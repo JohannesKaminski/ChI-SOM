@@ -9,10 +9,10 @@ fingerprint_kwargs = {"fpSize": 1024, "radius": 2}
 
 file_dict = {
     "active": [
-        "tests/testdata/VDR/actives.smi",
+        "tests/VDR/actives.smi",
     ],
     "inactive": [
-        "tests/testdata/VDR/inactives.smi",
+        "tests/VDR/inactives.smi",
     ],
 }
 
@@ -35,7 +35,7 @@ leaf_map = {
 
 file_creator.create(
     file_dict,
-    "tests/testdata/VDR.h5",
+    "tests/VDR.h5",
     leaf_map,
     skip_lines=1,
     sep="\t",
