@@ -50,7 +50,6 @@ dependencies = [
     "rdkit>=2024.9.6",
     "tables>=3.10.2",
     "tqdm>=4.65",
-    "zarr>=3.0.8",
     "scipy>=1.15.2",
     "pyqtgraph>=0.13.7",
     "pyside6>=6.10.0",
