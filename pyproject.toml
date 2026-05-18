@@ -8,7 +8,7 @@ maintainers = [
     { name = "Johannes Kaminski", email = "j.kaminski@uni-muenster.de" },
 ]
 description = "Fast self-oranizing maps for cheminformatics using numba"
-requires-python = ">=3.13"
+requires-python = ">=3.13, <3.14"
 readme = "docs/README.md"
 keywords = [
     "som",
@@ -42,7 +42,7 @@ classifiers = [
 license = "LGPL-3.0-or-later"
 license-files = ["LICENSES/*"]
 
-version = "1.0.2"
+version = "1.0.3"
 
 dependencies = [
     "numba>=0.61.2",
@@ -50,12 +50,11 @@ dependencies = [
     "rdkit>=2024.9.6",
     "tables>=3.10.2",
     "tqdm>=4.65",
-    "zarr>=3.0.8",
     "scipy>=1.15.2",
     "pyqtgraph>=0.13.7",
     "pyside6>=6.10.0",
     "matplotlib>=3.10.8",
-    "numpy<2.4",
+    "numpy>=2,<2.4",
 ]
 
 [project.urls]
@@ -78,6 +77,7 @@ dev = [
     "types-tqdm>=4.67.3.20260303",
     "scipy-stubs>=1.17.1.0",
     "pandas-stubs>=3.0.0.260204",
+    "torch>=2.11",
 ]
 
 [project.optional-dependencies]
@@ -85,7 +85,7 @@ cu12 = ["numba-cuda[cu12]>=0.20.0,<0.25.0"]
 cu13 = ["numba-cuda[cu13]>=0.20.0,<0.25.0"]
 
 [build-system]
-requires = ["uv_build>=0.10.4,<0.11"]
+requires = ["uv_build>=0.10.4,<0.11.15"]
 build-backend = "uv_build"
 
 [tool.uv.build-backend]
@@ -94,6 +94,13 @@ module-name = "chisom"
 [tool.uv]
 environments = ["sys_platform == 'linux'"]
 conflicts = [[{ extra = "cu12" }, { extra = "cu13" }]]
+
+[tool.uv.sources]
+torch = { index = "pytorch" }
+
+[[tool.uv.index]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl/cpu"
 
 [[tool.uv.index]]
 name = "testpypi"

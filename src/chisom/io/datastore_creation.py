@@ -185,9 +185,7 @@ def _parse_output_path(out_path: str, file_extentions: list[str]) -> str:
         if not p.parent.is_dir():
             raise FileNotFoundError(f"Path {p} does not exist!")
 
-        if not p.suffix:
-            out_file = p.absolute() / ".zarr"
-        elif p.suffix in file_extentions:
+        if p.suffix in file_extentions:
             out_file = p.absolute()
         else:
             raise ValueError(f"Wrong file extention for file with path {p}!")

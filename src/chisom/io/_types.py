@@ -3,7 +3,6 @@ from typing import Dict, List, Protocol, Set, Tuple, TypeVar, runtime_checkable
 
 import numpy as np
 import tables
-import zarr
 from numpy.typing import NDArray
 
 Mol = TypeVar("Mol")
@@ -17,7 +16,7 @@ OutputLine = Dict[str, List[str] | NDArray]
 LeafMap = Dict[str, Tuple[int, Atom_Type, str] | Tuple[int, Atom_Type]]
 Range = TypeVar("Range", List[float], Set)
 RangesDict = Dict[str, Dict[str, str | Range]]
-FileRoot = TypeVar("FileRoot", tables.Group, zarr.Group)
+FileRoot = type(tables.Group)
 FingerprintStack = TypeVar("FingerprintStack", NDArray, List[NDArray])
 Packer = Callable[[FingerprintStack], NDArray]
 
