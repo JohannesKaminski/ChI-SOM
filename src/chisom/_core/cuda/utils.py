@@ -13,7 +13,7 @@ https://gist.github.com/GBJim/7ea9c16e9bea5b4dc913246e2e2dbc84
 
 
 def cuda_argmin_2d(
-    distance_matrix: MapValues, partial_argmin: MapValues, array_size: Position, stream
+    distance_matrix: MapValues, partial_argmin: MapValues, array_size: Position
 ) -> DeviceNDArray:
     """
     Compute the argmin of a 2D array on the GPU using a parallel reduction approach.
@@ -26,8 +26,6 @@ def cuda_argmin_2d(
         Device array to store intermediate and final results
     array_size : Position
         The size of the input array
-    stream : cuda.Stream
-        CUDA stream to use for execution
 
     Returns
     -------
@@ -41,7 +39,7 @@ def cuda_argmin_2d(
         (array_dimensions_shape[1] // threads_per_block[1]) + 1,
     )
 
-    cuda_argmin_2d_partial_build_index[new_array_dimensions, threads_per_block, stream](
+    cuda_argmin_2d_partial_build_index[new_array_dimensions, threads_per_block](
         distance_matrix, partial_argmin, array_dimensions_shape
     )
 
@@ -51,9 +49,9 @@ def cuda_argmin_2d(
             int((array_dimensions[0] // threads_per_block[0]) + 1),
             int((array_dimensions[1] // threads_per_block[1]) + 1),
         )
-        cuda_argmin_2d_partial_existing_index[
-            new_array_dimensions, threads_per_block, stream
-        ](distance_matrix, partial_argmin, array_dimensions)
+        cuda_argmin_2d_partial_existing_index[new_array_dimensions, threads_per_block](
+            distance_matrix, partial_argmin, array_dimensions
+        )
 
     return partial_argmin[0, 0]
 

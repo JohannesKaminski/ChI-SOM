@@ -4,7 +4,6 @@ from typing import Tuple
 import numpy as np
 from numba import cuda
 from numba.core.errors import NumbaPerformanceWarning
-from numba.types import float32, int32
 from numpy.typing import NDArray
 
 from chisom._core.base import Trainer
@@ -49,12 +48,12 @@ def make_update_function(
         row_grid_size, column_grid_size = cuda.gridsize(2)
         num_rows, num_cols, num_features = codebook.shape
 
-        shared_bmu_position = cuda.shared.array(2, dtype=int32)
+        shared_bmu_position = cuda.shared.array(2, dtype=np.int32)
         if cuda.threadIdx.x == 0 and cuda.threadIdx.y == 0:
             shared_bmu_position[0] = bmu_position[0]
             shared_bmu_position[1] = bmu_position[1]
 
-        shared_vector = cuda.shared.array(2048, dtype=float32)
+        shared_vector = cuda.shared.array(2048, dtype=np.float32)
         # threadIdx.x is the fasted changing, so needs to be coalesced. n_features > (cuda.blockDim.x + cuda.blockDim.y) is handled.
         for feature_idx in range(
             (cuda.threadIdx.y * cuda.blockDim.x + cuda.threadIdx.x),
@@ -152,7 +151,6 @@ class CudaTrainer(Trainer):
             fastmath=fastmath,
         )
         self.compute_capablity = str(cuda.get_current_device().compute_capability)
-        self._cuda_stream = cuda.stream()
 
         # Use perfomance tested threads per block and max registers, if available
         if self.compute_capablity in COMPUTE_CAPABILITY_MAPPING.keys():
@@ -196,16 +194,11 @@ class CudaTrainer(Trainer):
             (self.num_rows, self.num_columns),
             dtype=np.float32,
             order="F",
-            stream=self._cuda_stream,
         )
         self.partial_argmin = cuda.device_array(
-            (row_blocks, column_blocks, 2),
-            np.int32,
-            stream=self._cuda_stream,
+            (row_blocks, column_blocks, 2), np.int32
         )
-        self.array_size = cuda.mapped_array(
-            2, dtype=np.float32, stream=self._cuda_stream
-        )
+        self.array_size = cuda.mapped_array(2, dtype=np.float32)
 
         warnings.simplefilter("ignore", NumbaPerformanceWarning)
 
@@ -214,14 +207,13 @@ class CudaTrainer(Trainer):
         return "cuda"
 
     def train(self, batch):
-        device_batch = cuda.to_device(batch, stream=self._cuda_stream)
+        device_batch = cuda.to_device(batch)
         for vector in device_batch:
             cuda.synchronize()
 
             self.vector_distance_function[
                 self.blocks_per_grid,
                 self.threads_per_block,
-                self._cuda_stream,
             ](
                 self._codebook,
                 vector,
@@ -232,13 +224,11 @@ class CudaTrainer(Trainer):
                 self.codebook_vector_distance,
                 self.partial_argmin,
                 self.array_size,
-                self._cuda_stream,
             )
 
             self.update_function[
                 self.blocks_per_grid,
                 self.threads_per_block,
-                self._cuda_stream,
             ](
                 self._codebook,
                 vector,
@@ -249,7 +239,7 @@ class CudaTrainer(Trainer):
     @property
     def codebook(self):
         cuda.synchronize()
-        cpu_codebook = self._codebook.copy_to_host(stream=self._cuda_stream)
+        cpu_codebook = self._codebook.copy_to_host()
         return np.asarray(cpu_codebook, order="C")
 
     @codebook.setter
@@ -260,20 +250,18 @@ class CudaTrainer(Trainer):
                 dtype=np.float32,
                 order="F",
             ),
-            stream=self._cuda_stream,
         )
         cuda.synchronize()
 
     def predict(self, batch: NDArray) -> Tuple[NDArray, NDArray]:
         bmu = []
         qe = []
-        d_batch = cuda.to_device(batch, stream=self._cuda_stream)
+        d_batch = cuda.to_device(batch)
         with cuda.defer_cleanup():
             for vector in d_batch:
                 self.vector_distance_function[
                     self.blocks_per_grid,
                     self.threads_per_block,
-                    self._cuda_stream,
                 ](
                     self._codebook,
                     vector,
@@ -284,7 +272,6 @@ class CudaTrainer(Trainer):
                     self.codebook_vector_distance,
                     self.partial_argmin,
                     self.array_size,
-                    self._cuda_stream,
                 )
 
                 bmu.append(argmin.copy_to_host())
@@ -294,7 +281,7 @@ class CudaTrainer(Trainer):
     def update_coefficients(self, alpha, sigma, epoch):
         super().update_coefficients(alpha, sigma, epoch)
         self.device_coefficients = cuda.to_device(
-            self.computed_coefficients.astype(np.float32, order="F"), self._cuda_stream
+            self.computed_coefficients.astype(np.float32, order="F")
         )
 
     def __del__(self):
@@ -302,4 +289,3 @@ class CudaTrainer(Trainer):
         del self.codebook_vector_distance
         del self.partial_argmin
         del self.array_size
-        del self._cuda_stream
