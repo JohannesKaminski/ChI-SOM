@@ -12,8 +12,9 @@ from PySide6.QtGui import QBrush, QPixmap
 from rdkit import Chem
 from rdkit.Chem import Draw as rdDraw
 
-from .helpers import create_bmu_composition, min_max
 from chisom.io.datastores import DatasetBase
+
+from .helpers import create_bmu_composition, min_max
 
 bmu_type = np.dtype([("row", np.uint16), ("column", np.uint16)])
 
@@ -295,7 +296,7 @@ class CommonDataModel(QtCore.QAbstractTableModel):
                     (value_type, value_range),
                 )
 
-            def get_values_for_column(property_name: str):
+            def get_values_for_column(property_name: str) -> List:
                 return self.data_instance[property_name].to_list()
 
             self.get_values_for_column = get_values_for_column
@@ -356,10 +357,10 @@ class CommonDataModel(QtCore.QAbstractTableModel):
         return len(self.columns) if self.columns is not None else 0
 
     def headerData(self, section, orientation, /, role=...):
-        if role == QtCore.Qt.DisplayRole:
-            if orientation == QtCore.Qt.Horizontal:
+        if role == QtCore.Qt.ItemDataRole.DisplayRole:
+            if orientation == QtCore.Qt.Orientation.Horizontal:
                 return self.columns[section] if section < len(self.columns) else None
-            if orientation == QtCore.Qt.Vertical:
+            if orientation == QtCore.Qt.Orientation.Vertical:
                 return section + 1  # Return row number for vertical header
 
     def data(self, index, /, role=...):
@@ -369,7 +370,10 @@ class CommonDataModel(QtCore.QAbstractTableModel):
         if not index.isValid():
             return None
 
-        if role == QtCore.Qt.DecorationRole and column == self.structure_column_id:
+        if (
+            role == QtCore.Qt.ItemDataRole.DecorationRole
+            and column == self.structure_column_id
+        ):
             data_column = self.column_name_map[column]
             if self.type == "None":
                 return None
@@ -381,7 +385,10 @@ class CommonDataModel(QtCore.QAbstractTableModel):
             compound_image = self.create_CompoundImage(datapoint)
             return compound_image
 
-        elif role == QtCore.Qt.DisplayRole and column != self.structure_column_id:
+        elif (
+            role == QtCore.Qt.ItemDataRole.DisplayRole
+            and column != self.structure_column_id
+        ):
             data_column = self.column_name_map[column]
             if self.type == "None":
                 return None
@@ -453,7 +460,7 @@ class FilterModel(QtCore.QAbstractProxyModel):
         return self.sourceModel().data(base_index, role)
 
     @Slot(list)
-    def set_selected_rows(self, rows: List[int]) -> None:
+    def set_selected_rows(self, rows: npt.NDArray[np.int64]) -> None:
         self.beginResetModel()
         self.selected_rows = rows.flatten().tolist()
         self.endResetModel()
@@ -464,7 +471,7 @@ class BMUColors(QObject):
     colors_updated = Signal(list)
     cmap_updated = Signal(list)
 
-    def __init__(self, datamodel: CommonDataModel, bmu_map: BMUMap):
+    def __init__(self, datamodel: FilterModel, bmu_map: BMUMap):
         super().__init__()
         self.datamodel = datamodel
         self.bmu_map = bmu_map

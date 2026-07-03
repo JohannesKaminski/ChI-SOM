@@ -1,14 +1,14 @@
-from typing import Dict, List, Optional, Union
+from typing import Dict, Optional, Tuple, Union
 
 import numpy as np
 import numpy.typing as npt
 import pyqtgraph as pg
 import pyqtgraph.exporters
-import PySide6.QtWidgets as W  # type: ignore
+import PySide6.QtWidgets as W
 from pandas import DataFrame
 from pyqtgraph.functions import mkPen
-from PySide6.QtCore import QObject, QSize, Qt, Signal, Slot  # type: ignore
-from PySide6.QtGui import QKeySequence  # type: ignore
+from PySide6.QtCore import QObject, QSize, Qt, Signal, Slot
+from PySide6.QtGui import QKeySequence
 from scipy.interpolate import RegularGridInterpolator
 
 from chisom._interface.helpers import CyclicGreen, EarthColorMap
@@ -57,7 +57,7 @@ class UMap(QObject):
         Rescale the UMap to a new scaling factor.
         This is used to update the U-matrix with a new scaling factor.
         """
-        self._scaling_factor = scaling
+        self.scaling_factor = scaling
         self.scaled_values = self._interpolate_matrix(
             self.selected_values, self.scaling_factor
         )
@@ -145,7 +145,7 @@ class UMap(QObject):
 
 class ImageDelegate(W.QStyledItemDelegate):
     def paint(self, painter, option, index):
-        pixmap = index.data(Qt.DecorationRole)
+        pixmap = index.data(Qt.ItemDataRole.DecorationRole)
         if pixmap:
             # Center-align the image
             pixmap_rect = option.rect
@@ -158,7 +158,7 @@ class ImageDelegate(W.QStyledItemDelegate):
         super().paint(painter, option, index)
 
     def sizeHint(self, option, index):
-        pixmap = index.data(Qt.DecorationRole)
+        pixmap = index.data(Qt.ItemDataRole.DecorationRole)
         if pixmap:
             return QSize(pixmap.width(), pixmap.height())
         return super().sizeHint(option, index)
@@ -207,7 +207,7 @@ class CompoundTable(W.QTableView):
             # designated stretch column.
             header.setStretchLastSection(False)
         else:
-            header.setSectionResizeMode(-1, W.QHeaderView.ResizeMode.Stretch)
+            header.setSectionResizeMode(W.QHeaderView.ResizeMode.Stretch)
             header.setStretchLastSection(True)
 
     def serialize(self, useSelection=False):
@@ -229,12 +229,14 @@ class CompoundTable(W.QTableView):
         )  # account for header row
 
         for i, c in enumerate(columns):
-            data[0, i] = model.headerData(c, Qt.Horizontal, Qt.DisplayRole)
+            data[0, i] = model.headerData(
+                c, Qt.Orientation.Horizontal, Qt.ItemDataRole.DisplayRole
+            )
 
         for i, r in enumerate(rows):
             for j, c in enumerate(columns):
                 index = model.index(r, c)
-                data[i + 1, j] = model.data(index, Qt.DisplayRole)
+                data[i + 1, j] = model.data(index, Qt.ItemDataRole.DisplayRole)
 
         s = ""
         for row in data:
@@ -304,7 +306,9 @@ class CatergoryPair(W.QWidget):
 class ColorCategoryWidget(W.QGroupBox):
     cmap_set = Signal(dict)
 
-    def __init__(self, data_columns: List[str], parent=None):
+    def __init__(
+        self, data_columns: Dict[str, Tuple[np.dtype, Tuple[str, list]]], parent=None
+    ):
         super().__init__(parent=parent)
 
         self.currently_selected = None
@@ -384,7 +388,7 @@ class ControlWidget(W.QGroupBox):
         self.cmap_label = W.QLabel("Colormap:")
         self.cmap_selector = W.QComboBox()
         self.cmap_selector.setEditable(False)
-        self.cmap_selector.addItems(cmaps)
+        self.cmap_selector.addItems(list(self.cmaps.keys()))
         self.cmap_selector.currentTextChanged.connect(self.change_colormap)
         cmap_layout.addWidget(self.cmap_label)
         cmap_layout.addWidget(self.cmap_selector)
@@ -404,7 +408,7 @@ class ControlWidget(W.QGroupBox):
         self.bmu_color_by_label = W.QLabel("Color by:")
         self.bmu_color_by_selector = W.QComboBox()
         self.bmu_color_by_selector.setEditable(False)
-        self.bmu_color_by_selector.addItems(data_columns.keys())
+        self.bmu_color_by_selector.addItems(list(data_columns.keys()))
         self.bmu_color_by_selector.textActivated.connect(self.select_property)
 
         bmu_layout.addWidget(self.bmu_visibility_label, 0, 0)
@@ -420,7 +424,7 @@ class ControlWidget(W.QGroupBox):
         self.main_layout.addWidget(self.category_color)
         self.continous_color = W.QComboBox(self)
         self.continous_color.setEditable(False)
-        self.continous_color.addItems(cmaps)
+        self.continous_color.addItems(list(self.cmaps.keys()))
         self.continous_color.setVisible(False)
         self.main_layout.addWidget(self.continous_color)
 
@@ -456,15 +460,15 @@ class ControlWidget(W.QGroupBox):
             self.continous_color.setVisible(True)
 
     @Slot(int, int)
-    def set_bmu_state(self, bmu_state: int, bmu_size: int):
+    def set_bmu_state(self, bmu_state: Qt.CheckState, bmu_size: int):
         self.bmu_visibility_toggle.setCheckState(Qt.CheckState(bmu_state))
         self.bmu_size_selector.setValue(bmu_size)
 
     @Slot(int)
-    def toggle_bmus(self, state: int):
-        if state == 2:
+    def toggle_bmus(self, state: Qt.CheckState):
+        if state == Qt.CheckState.Checked:
             self.bmus_toggled.emit(True)
-        if state == 0:
+        if state == Qt.CheckState.Unchecked:
             self.bmus_toggled.emit(False)
 
     @Slot(int)
@@ -490,18 +494,18 @@ class Roi(pg.PolyLineROI):
         self.sigRegionChangeFinished.connect(self._roi_changed)
         self.previous_positions = []
 
-    def addPoint(self, point: npt.NDArray):
+    def addPoint(self, point: Tuple[float, float]):
         self.previous_positions = [
             tuple(handle["item"].pos()) for handle in self.handles
         ]
-        new_positions = self.previous_positions + [tuple(point)]
+        new_positions = self.previous_positions + [point]
         self.setPoints(new_positions)
 
     def clear(self):
         """
         Clear the ROI points.
         """
-        self.previous_positions = set()
+        self.previous_positions = []
         super().setPoints(self.previous_positions)
 
     def _roi_changed(self):
@@ -555,7 +559,6 @@ class UpperView(W.QWidget):
             resizable=False,
         )
         self.roi.roi_changed.connect(self.get_roi)
-        self.previous_roi_coords = np.array([], dtype=np.float16)
 
         self.map_view = pg.ViewBox(invertY=True, lockAspect=True)
         self.map_view.addItem(self.umap.ImageItem)
@@ -632,7 +635,7 @@ class UpperView(W.QWidget):
         pos = self.map_view.mapSceneToView(event.scenePos())
         modifier = event.modifiers()
 
-        if modifier == Qt.KeyboardModifier.ControlModifier:
+        if modifier & Qt.KeyboardModifier.ControlModifier:
             self.roi.addPoint((pos.x(), pos.y()))
         else:
             self.roi.clear()
