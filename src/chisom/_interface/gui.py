@@ -371,20 +371,28 @@ class ColorCategoryWidget(W.QGroupBox):
 
 class ControlWidget(W.QGroupBox):
     colormap_changed = Signal(str)
+    colorbar_visible = Signal(bool)
     bmus_toggled = Signal(bool)
     bmus_resized = Signal(int)
-    bmus_recolored = Signal(list)
+    continous_color_selected = Signal(str, object)
+    categorical_color_selected = Signal(str, dict)
 
-    def __init__(self, cmaps: List[str], data_columns: Dict, parent=None):
+    def __init__(
+        self,
+        cmaps: Dict[str, str],
+        data_columns: Dict,
+        bmu_colors: BMUColors,
+        parent=None,
+    ):
         super().__init__("Controls", parent=parent)
 
-        self.bmu_colors: BMUColors = self.parent().bmu_colors
+        self.bmu_colors = bmu_colors
+        self.cmaps = cmaps
         self.main_layout = W.QVBoxLayout(self)
         self.data_columns = data_columns
 
         # Colormap
         cmap_layout = W.QHBoxLayout()
-        self.cmaps = self.parent().cmaps
         self.cmap_label = W.QLabel("Colormap:")
         self.cmap_selector = W.QComboBox()
         self.cmap_selector.setEditable(False)
@@ -399,7 +407,7 @@ class ControlWidget(W.QGroupBox):
         bmu_layout = W.QGridLayout()
         self.bmu_visibility_label = W.QLabel("BMUs")
         self.bmu_visibility_toggle = W.QCheckBox("show")
-        self.bmu_visibility_toggle.stateChanged.connect(self.toggle_bmus)
+        self.bmu_visibility_toggle.checkStateChanged.connect(self.toggle_bmus)
         self.bmu_size_label = W.QLabel("Size:")
         self.bmu_size_selector = W.QSpinBox(parent=self)
         self.bmu_size_selector.setRange(1, 200)
@@ -439,14 +447,14 @@ class ControlWidget(W.QGroupBox):
     def color_selected_continous(self, cmap: str):
         current_property = self.bmu_color_by_selector.currentText()
         selected_cmap = self.cmaps[cmap]
-        self.parent().bmu_colorbar.setVisible(True)
-        self.bmu_colors.update_bmu_colors_gradient((current_property, selected_cmap))
+        self.colorbar_visible.emit(True)
+        self.continous_color_selected.emit(current_property, selected_cmap)
 
     @Slot(dict)
     def color_selected_categorical(self, cmap: dict):
         current_property = self.bmu_color_by_selector.currentText()
-        self.parent().bmu_colorbar.setVisible(False)
-        self.bmu_colors.update_bmu_colors_categorical((current_property, cmap))
+        self.colorbar_visible.emit(False)
+        self.categorical_color_selected.emit(current_property, cmap)
 
     @Slot(str)
     def select_property(self, name):
@@ -531,25 +539,25 @@ class UpperView(W.QWidget):
     def __init__(
         self,
         umap: UMap,
+        bmu_map: BMUMap,
+        bmu_colors: BMUColors,
         data_columns: Dict,
         parent=None,
     ):
         super().__init__(parent=parent)
-        self.data_model: FilterModel = self.parent().data_model
-        self.bmu_map: BMUMap = self.parent().bmu_map
-        self.bmu_colors: BMUColors = self.parent().bmu_colors
 
         self.umap = umap
         self.bmu_pen = mkPen("k", width=1.5)
         self.bmus_points = pg.ScatterPlotItem(
-            x=self.bmu_map.bmu_map_coordinates[:, 1],
-            y=self.bmu_map.bmu_map_coordinates[:, 0],
+            x=bmu_map.bmu_map_coordinates[:, 1],
+            y=bmu_map.bmu_map_coordinates[:, 0],
             pxMode=True,
             size=10,
-            brush=self.bmu_colors.current_colors,
+            brush=bmu_colors.current_colors,
             pen=self.bmu_pen,
         )
-        self.bmu_colors.colors_updated.connect(self.set_bmu_colors)
+
+        bmu_colors.colors_updated.connect(self.set_bmu_colors)
 
         # Initialize ROI variables
         self.roi = Roi(
@@ -579,7 +587,7 @@ class UpperView(W.QWidget):
             interactive=False,
         )
         self.bmu_colorbar.setVisible(False)
-        self.bmu_colors.cmap_updated.connect(self.change_bmu_colorbar)
+        bmu_colors.cmap_updated.connect(self.change_bmu_colorbar)
 
         self.graphic_layout = pg.GraphicsLayoutWidget(parent=self)
         self.graphic_layout.addItem(self.map_view)
@@ -589,12 +597,22 @@ class UpperView(W.QWidget):
         self.map_view.scene().sigMouseClicked.connect(self.handle_click)
 
         self.control = ControlWidget(
-            cmaps=list(self.cmaps.keys()), data_columns=data_columns, parent=self
+            cmaps=self.cmaps,
+            data_columns=data_columns,
+            bmu_colors=bmu_colors,
+            parent=self,
         )
         self.control.colormap_changed.connect(self.change_map_colormap)
         self.control.bmus_resized.connect(self.bmus_points.setSize)
         self.control.bmus_toggled.connect(self.bmus_points.setPointsVisible)
-        # self.control.color_widget.properties_set.connect(self.update_bmu_colors)
+        self.control.colorbar_visible.connect(self.bmu_colorbar.setVisible)
+        self.control.continous_color_selected.connect(
+            bmu_colors.update_bmu_colors_gradient
+        )
+        self.control.categorical_color_selected.connect(
+            bmu_colors.update_bmu_colors_categorical
+        )
+
         # Set the initial colormap to Earth
         self.control.cmap_selector.setCurrentText("Earth")
         self.change_map_colormap("Earth")
@@ -657,16 +675,14 @@ class UpperView(W.QWidget):
 
 
 class SelectionView(W.QWidget):
-    def __init__(self, parent=None):
+    def __init__(self, data_model: FilterModel, parent=None):
         super().__init__(parent=parent)
         self.installEventFilter(self)
         # self.setOrientation(Qt.Orientation.Horizontal)
 
-        self.data_model: FilterModel = self.parent().data_model
-
         self.table = CompoundTable(parent=self)
-        self.table.setModel(self.data_model)
-        self.data_model.selection_changed.connect(self.table.resize_to_contents)
+        self.table.setModel(data_model)
+        data_model.selection_changed.connect(self.table.resize_to_contents)
         layout = W.QHBoxLayout()
         layout.addWidget(self.table)
         self.setLayout(layout)
@@ -676,22 +692,26 @@ class MainView(W.QSplitter):
     def __init__(
         self,
         umap: UMap,
+        data_model: FilterModel,
+        bmu_map: BMUMap,
+        bmu_colors: BMUColors,
         parent=None,
     ):
         super().__init__(parent=parent)
         self.installEventFilter(self)
         self.setOrientation(Qt.Orientation.Vertical)
 
-        self.data_model: FilterModel = self.parent().data_model
-        self.bmu_map: BMUMap = self.parent().bmu_map
-        self.bmu_colors: BMUColors = self.parent().bmu_colors
+        self.data_model = data_model
+        self.bmu_map = bmu_map
 
         self.upper_view = UpperView(
             umap=umap,
-            data_columns=self.data_model.columns_with_properties,
+            bmu_map=self.bmu_map,
+            bmu_colors=bmu_colors,
+            data_columns=data_model.columns_with_properties,
             parent=self,
         )
-        self.data_view = SelectionView(parent=self)
+        self.data_view = SelectionView(data_model=self.data_model, parent=self)
 
         self.addWidget(self.upper_view)
 
@@ -742,10 +762,13 @@ class MainSomWindow(W.QMainWindow):
             data_index=data.index,
             scaling_factor=scaling_factor,
         )
-        self.bmu_colors = BMUColors(self.data_model, self.bmu_map)
+        bmu_colors = BMUColors(self.data_model, self.bmu_map)
 
         self.main_view = MainView(
             umap=self.umap,
+            data_model=self.data_model,
+            bmu_map=self.bmu_map,
+            bmu_colors=bmu_colors,
             parent=self,
         )
 
