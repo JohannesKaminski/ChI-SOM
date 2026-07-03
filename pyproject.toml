@@ -81,11 +81,17 @@ dev = [
 ]
 
 [project.optional-dependencies]
-cu12 = ["numba-cuda[cu12]>=0.20.0,<0.25.0"]
-cu13 = ["numba-cuda[cu13]>=0.20.0,<0.25.0"]
+cu12 = [
+    "cuda-pathfinder>=1.4",
+    "numba-cuda[cu12]>=0.20.0",
+]
+cu13 = [
+    "cuda-pathfinder>=1.4",
+    "numba-cuda[cu13]>=0.20.0",
+]
 
 [build-system]
-requires = ["uv_build>=0.10.4,<0.11.15"]
+requires = ["uv_build>=0.10.4,<0.11.21"]
 build-backend = "uv_build"
 
 [tool.uv.build-backend]
@@ -97,6 +103,11 @@ conflicts = [[{ extra = "cu12" }, { extra = "cu13" }]]
 
 [tool.uv.sources]
 torch = { index = "pytorch" }
+cuda-pathfinder = { index = "pypi" } # This is a fix for cuda-pathfinder being very much behind on the pytorch index, which would have precedence. Can be removed when pytorch fixes their index
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
 
 [[tool.uv.index]]
 name = "pytorch"
