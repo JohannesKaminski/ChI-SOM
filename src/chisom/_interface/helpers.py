@@ -13,7 +13,7 @@ from pyqtgraph import ColorMap
 
 def create_stops(n_classes: int):
     """
-    Create the stops necessary to create a non-continous colormap with n_classes
+    Create the stops necessary to create a non-continuous colormap with n_classes
 
     Parameters
     ----------

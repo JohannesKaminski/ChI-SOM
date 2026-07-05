@@ -28,9 +28,9 @@ leaf_map = {
     "primary": (0, str),
     "ID": (1, str, "na"),
     "Activity": (2, int, "categorical"),
-    "MolWt": (3, float32, "continous"),
-    "MolLogP": (4, float32, "continous"),
-    "TPSA": (5, float32, "continous"),
+    "MolWt": (3, float32, "continuous"),
+    "MolLogP": (4, float32, "continuous"),
+    "TPSA": (5, float32, "continuous"),
 }
 
 file_creator.create(

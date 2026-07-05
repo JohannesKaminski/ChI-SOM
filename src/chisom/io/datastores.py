@@ -175,7 +175,7 @@ class HDF5Dataset(DatasetBase):
                         self.columns_with_properties[leaf_name][1][1] = list(
                             set.union(set(current_value_range), set(value_range))
                         )
-                    elif value_type == "continous":
+                    elif value_type == "continuous":
                         self.columns_with_properties[leaf_name][1][1][0] = min(
                             current_value_range[0], value_range[0]
                         )

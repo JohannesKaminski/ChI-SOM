@@ -374,7 +374,7 @@ class ControlWidget(W.QGroupBox):
     colorbar_visible = Signal(bool)
     bmus_toggled = Signal(bool)
     bmus_resized = Signal(int)
-    continous_color_selected = Signal(str, object)
+    continuous_color_selected = Signal(str, object)
     categorical_color_selected = Signal(str, dict)
 
     def __init__(
@@ -430,25 +430,25 @@ class ControlWidget(W.QGroupBox):
         self.category_color = ColorCategoryWidget(data_columns)
         self.category_color.setVisible(False)
         self.main_layout.addWidget(self.category_color)
-        self.continous_color = W.QComboBox(self)
-        self.continous_color.setEditable(False)
-        self.continous_color.addItems(list(self.cmaps.keys()))
-        self.continous_color.setVisible(False)
-        self.main_layout.addWidget(self.continous_color)
+        self.continuous_color = W.QComboBox(self)
+        self.continuous_color.setEditable(False)
+        self.continuous_color.addItems(list(self.cmaps.keys()))
+        self.continuous_color.setVisible(False)
+        self.main_layout.addWidget(self.continuous_color)
 
         self.category_color.cmap_set.connect(self.color_selected_categorical)
-        self.continous_color.textActivated.connect(self.color_selected_continous)
+        self.continuous_color.textActivated.connect(self.color_selected_continuous)
 
         self.main_layout.addStretch()
 
         self.setLayout(self.main_layout)
 
     @Slot(str)
-    def color_selected_continous(self, cmap: str):
+    def color_selected_continuous(self, cmap: str):
         current_property = self.bmu_color_by_selector.currentText()
         selected_cmap = self.cmaps[cmap]
         self.colorbar_visible.emit(True)
-        self.continous_color_selected.emit(current_property, selected_cmap)
+        self.continuous_color_selected.emit(current_property, selected_cmap)
 
     @Slot(dict)
     def color_selected_categorical(self, cmap: dict):
@@ -460,12 +460,12 @@ class ControlWidget(W.QGroupBox):
     def select_property(self, name):
         value_type = self.data_columns[name][1][0]
         if value_type == "categorical":
-            self.continous_color.setVisible(False)
+            self.continuous_color.setVisible(False)
             self.category_color.select_property(name)
             self.category_color.setVisible(True)
         else:
             self.category_color.setVisible(False)
-            self.continous_color.setVisible(True)
+            self.continuous_color.setVisible(True)
 
     @Slot(int, int)
     def set_bmu_state(self, bmu_state: Qt.CheckState, bmu_size: int):
@@ -606,7 +606,7 @@ class UpperView(W.QWidget):
         self.control.bmus_resized.connect(self.bmus_points.setSize)
         self.control.bmus_toggled.connect(self.bmus_points.setPointsVisible)
         self.control.colorbar_visible.connect(self.bmu_colorbar.setVisible)
-        self.control.continous_color_selected.connect(
+        self.control.continuous_color_selected.connect(
             bmu_colors.update_bmu_colors_gradient
         )
         self.control.categorical_color_selected.connect(

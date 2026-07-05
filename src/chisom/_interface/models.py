@@ -284,7 +284,7 @@ class CommonDataModel(QtCore.QAbstractTableModel):
                     value_range = list(unique)
                 else:
                     try:
-                        value_type = "continous"
+                        value_type = "continuous"
                         value_range = [min(data), max(data)]
                     # Catch Columns with lots of different text (e.g. SMILES)
                     except Exception:

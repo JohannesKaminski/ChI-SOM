@@ -359,7 +359,7 @@ class StoreCreator(ABC):
 
                 for leaf_name, values in out_batch.items():
                     local_range_dict_item = local_range_dict[leaf_name]
-                    if local_range_dict_item["type"] == "continous":
+                    if local_range_dict_item["type"] == "continuous":
                         local_range_dict_item["value_range"][0] = min(
                             local_range_dict_item["value_range"][0], np.min(values)
                         )
@@ -380,7 +380,7 @@ class StoreCreator(ABC):
 
         ranges_lock.acquire()
         for leaf_name, local_values in local_range_dict.items():
-            if local_values["type"] == "continous":
+            if local_values["type"] == "continuous":
                 local_values["value_range"][0] = min(
                     local_values["value_range"][0],
                     ranges_dict[leaf_name]["value_range"][0],
@@ -432,7 +432,7 @@ class StoreCreator(ABC):
         _ = leaf_map.pop("primary")
         ranges_dict = {}
         ranges_dict["fingerprint"] = {
-            "type": "continous",
+            "type": "continuous",
             "value_range": np.array([np.inf, -np.inf]),
         }
         ranges_dict["smiles"] = {"type": "na", "value_range": []}
@@ -440,9 +440,9 @@ class StoreCreator(ABC):
         for leaf_name, leaf_properties in leaf_map.items():
             try:
                 gui_use = leaf_properties[2]
-                if gui_use == "continous":
+                if gui_use == "continuous":
                     ranges_dict[leaf_name] = {
-                        "type": "continous",
+                        "type": "continuous",
                         "value_range": np.array([np.inf, -np.inf]),
                     }
 
