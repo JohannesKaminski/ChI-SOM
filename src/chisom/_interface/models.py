@@ -99,7 +99,8 @@ class RatioWeightingSchemes:
         return excess.flatten()
 
 
-class DataFrameSource:
+
+class DataFrameSource(QObject):
     def __init__(self, *args, **kwargs):
         self._df = pd.DataFrame(*args, **kwargs)
 
@@ -107,38 +108,62 @@ class DataFrameSource:
         self.columns_with_properties: dict[str, ColumnProperties] = {}
         for column in self._df.columns:
             data = self._df[column].to_numpy()
-            data_type = data.dtype
 
-            try:
-                unique = np.unique(data)
-            except Exception:
-                unique = set(data)
-
-            if len(unique) <= 10:
-                value_type = "categorical"
-                value_range = list(unique)
+            if len(set(data[:100])) <= 10:
+                self.set_categorical(data, column)
             else:
-                try:
-                    value_range = [np.min(data), np.max(data)]
-                except Exception:
-                    try:
-                        value_range = [min(data), max(data)]
-                    except Exception:
-                        data_type = None
-                        value_type = "na"
-                        value_range = []
-                    else:
-                        value_type = "continuous"
-                else:
-                    value_type = "continuous"
-
-            self.columns_with_properties[column] = ColumnProperties(
-                data_type, value_type, value_range
-            )
+                self.set_continuous(data, column)
 
     @property
     def column_names(self) -> list[str]:
         return list(self._df.columns)
+
+    @Slot(str)
+    def set_column_continuous(self, column_name: str) -> None:
+        data = self._df[column_name].to_numpy()
+        self.set_continuous(data, column_name)
+
+    def set_continuous(self, data: NDArray, column_name: str) -> None:
+        data_type = np.dtype(data)
+
+        try:
+            value_range = [np.min(data), np.max(data)]
+
+        except Exception:
+            try:
+                value_range = [min(data), max(data)]
+            except Exception:
+                data_type = None
+                value_type = "na"
+                value_range = []
+            else:
+                value_type = "continuous"
+        else:
+            value_type = "continuous"
+
+        self.columns_with_properties[column_name] = ColumnProperties(
+            data_type, value_type, value_range
+        )
+
+    @Slot(str)
+    def set_column_categorical(self, column_name: str) -> None:
+        data = self._df[column_name].to_numpy()
+        self.set_categorical(data, column_name)
+
+    def set_categorical(self, data: NDArray, column_name: str) -> None:
+        data_type = np.dtype(data)
+
+        try:
+            unique = np.unique(data)
+        except Exception:
+            unique = set(data)
+
+        value_type = "categorical"
+        value_range = list(unique)
+
+        self.columns_with_properties[column_name] = ColumnProperties(
+            data_type, value_type, value_range
+        )
 
     def __len__(self) -> int:
         return len(self._df.index)
