@@ -1,10 +1,10 @@
-from typing import Optional, Union
+from typing import Optional
 
 import numpy as np
-import numpy.typing as npt
 import pyqtgraph as pg
 import pyqtgraph.exporters
 import PySide6.QtWidgets as W
+from numpy.typing import NDArray
 from pandas import DataFrame
 from pyqtgraph.functions import mkPen
 from PySide6.QtCore import QObject, QSize, Qt, Signal, Slot
@@ -31,7 +31,7 @@ pg.setConfigOption("background", "w")
 class UMap(QObject):
     def __init__(
         self,
-        image: npt.NDArray,
+        image: NDArray,
         scaling_factor: int = 3,
         layer: int = -1,
         parent: Optional[QObject] = None,
@@ -46,7 +46,7 @@ class UMap(QObject):
         self.ImageItem = pg.ImageItem()
         self.set_umatrix(self.raw_values)
 
-    def set_umatrix(self, image: npt.NDArray, *args, **kwargs):
+    def set_umatrix(self, image: NDArray, *args, **kwargs):
         """
         Set the image of the UMap to a new image.
         This is used to update the U-matrix.
@@ -71,21 +71,21 @@ class UMap(QObject):
 
     @staticmethod
     def _interpolate_matrix(
-        matrix: npt.NDArray[np.float32], scaling: int
-    ) -> npt.NDArray[np.float32]:
+        matrix: NDArray[np.float32], scaling: int
+    ) -> NDArray[np.float32]:
         """
         Interpolates a matrix by a given scaling factor.
 
         Parameters
         ----------
-        matrix : npt.NDArray[np.float32]
+        matrix : NDArray[np.float32]
             matrix to interpolate
         scaling : int
             scaling factor
 
         Returns
         -------
-        npt.NDArray[np.float32]
+        NDArray[np.float32]
             Interpolated umatrix
         """
         # Double the matrix to handle border interpolation
@@ -734,7 +734,7 @@ class MainView(W.QSplitter):
         self.upper_view.new_bmu_selection.connect(self.new_bmu_selection)
 
     @Slot(np.ndarray)
-    def new_bmu_selection(self, selection_coords: npt.NDArray):
+    def new_bmu_selection(self, selection_coords: NDArray):
         # Get the BMU indices and data indices from the map coordinates
         scatter_indices, data_indices = self.bmu_map.get_bmu_info_from_map_coordinates(
             selection_coords
@@ -746,11 +746,11 @@ class MainView(W.QSplitter):
 class MainSomWindow(W.QMainWindow):
     def __init__(
         self,
-        umatrix: npt.NDArray,
-        bmu_coordinates: Optional[npt.NDArray],
-        data: Optional[DatasetBase | DataFrame],
-        structure_info_column: Optional[str],
-        scaling_factor: int,
+        umatrix: NDArray,
+        bmu_coordinates: Optional[NDArray] = None,
+        data: Optional[DatasetBase | DataFrame] = None,
+        structure_info_column: Optional[str] = None,
+        scaling_factor: int = 3,
     ):
         super().__init__()
         self.setMinimumSize(QSize(800, 600))
@@ -793,9 +793,9 @@ class MainSomWindow(W.QMainWindow):
 
 
 def start_chisom_viewer(
-    umatrix: npt.NDArray,
-    bmu_coordinates: npt.NDArray,
-    data: Union[DatasetBase, DataFrame],
+    umatrix: NDArray,
+    bmu_coordinates: Optional[NDArray] = None,
+    data: Optional[DatasetBase | DataFrame] = None,
     structure_info_column: Optional[str] = None,
     scaling_factor: int = 3,
 ):

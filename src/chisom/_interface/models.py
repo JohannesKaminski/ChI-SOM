@@ -2,7 +2,7 @@ from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 import pandas as pd
-from numpy.typing import ArrayLike, NDArray
+from numpy.typing import NDArray
 from pandas import DataFrame
 from PIL import ImageQt
 from pyqtgraph import mkBrush
@@ -161,7 +161,7 @@ class BMUMap(QObject):
 
     def __init__(
         self,
-        bmu_raw_coordinates: Optional[NDArray],
+        bmu_raw_coordinates: Optional[NDArray[np.float16]],
         scaling_factor: int,
         data_index,
         parent: Optional[QObject] = None,
@@ -254,7 +254,7 @@ class BMUMap(QObject):
             self.padding = self.scaling_factor // 2
             margin = self.padding + 0.5
             self.bmu_map_coordinates = np.empty(
-                (len(self.unique_bmu_coordinates), 2), dtype=np.float32
+                (len(self.unique_bmu_coordinates), 2), dtype=np.float16
             )
             self.bmu_map_coordinates[:, 0] = (
                 self.unique_bmu_coordinates[:, 0] * self.scaling_factor + margin
