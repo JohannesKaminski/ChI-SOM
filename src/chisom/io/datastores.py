@@ -293,8 +293,8 @@ class HDF5Dataset(DatasetBase):
         else:
             for group_name in self.group_subset:
                 group = self.file.root[group_name]
-                if column in group._v_leaves.keys():
-                    values.append(group._v_leaves[column][:])
+                if column_name in group._v_leaves.keys():
+                    values.append(group._v_leaves[column_name][:])
 
             values_out = np.concat(values)
 
