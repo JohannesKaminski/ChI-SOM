@@ -1,8 +1,8 @@
-from typing import List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
-import numpy.typing as npt
 import pandas as pd
+from numpy.typing import ArrayLike, NDArray
 from pandas import DataFrame
 from PIL import ImageQt
 from pyqtgraph import mkBrush
@@ -14,9 +14,8 @@ from rdkit.Chem import Draw as rdDraw
 
 from chisom.io.datastores import DatasetBase
 
+from ._types import ColumnProperties, TabularDatasource, bmu_type
 from .helpers import create_bmu_composition, min_max
-
-bmu_type = np.dtype([("row", np.uint16), ("column", np.uint16)])
 
 
 class RatioWeightingSchemes:
@@ -100,6 +99,57 @@ class RatioWeightingSchemes:
         return excess.flatten()
 
 
+class DataFrameSource:
+    def __init__(self, *args, **kwargs):
+        self._df = pd.DataFrame(*args, **kwargs)
+
+        # Gather info about columns, similar to ChemDataset, but slow
+        self.columns_with_properties: dict[str, ColumnProperties] = {}
+        for column in self._df.columns:
+            data = self._df[column].to_numpy()
+            data_type = data.dtype
+
+            try:
+                unique = np.unique(data)
+            except Exception:
+                unique = set(data)
+
+            if len(unique) <= 10:
+                value_type = "categorical"
+                value_range = list(unique)
+            else:
+                try:
+                    value_range = [np.min(data), np.max(data)]
+                except Exception:
+                    try:
+                        value_range = [min(data), max(data)]
+                    except Exception:
+                        data_type = None
+                        value_type = "na"
+                        value_range = []
+                    else:
+                        value_type = "continuous"
+                else:
+                    value_type = "continuous"
+
+            self.columns_with_properties[column] = ColumnProperties(
+                data_type, value_type, value_range
+            )
+
+    @property
+    def column_names(self) -> list[str]:
+        return list(self._df.columns)
+
+    def __len__(self) -> int:
+        return len(self._df.index)
+
+    def get_values_for_column(self, column_name: str) -> NDArray:
+        return self._df[column_name].to_numpy()
+
+    def get_value(self, row_idc: Union[int, list[int]], column_idx: int) -> Any:
+        return self._df.iloc[row_idc, column_idx]
+
+
 class BMUMap(QObject):
     """
     A class to map BMU coordinates to data indices and scatterplot item indices.
@@ -111,22 +161,22 @@ class BMUMap(QObject):
 
     def __init__(
         self,
-        bmu_raw_coordinates: Optional[npt.NDArray],
+        bmu_raw_coordinates: Optional[NDArray],
         scaling_factor: int,
         data_index,
         parent: Optional[QObject] = None,
     ) -> None:
         super().__init__(parent=parent)
-        self.bmu_map_coordinates: npt.NDArray
-        self.unique_bmu_coordinates: npt.NDArray
-        self.index_to_unique_mapping: npt.NDArray[np.int32]
+        self.bmu_map_coordinates: NDArray
+        self.unique_bmu_coordinates: NDArray
+        self.index_to_unique_mapping: NDArray[np.int32]
         self.scaling_factor: int = scaling_factor
         self.padding: int = 0
 
         self.bmu_state: int  # Used to track the visibility of the BMUs in the scatterplot and button position in the control widget
 
         if bmu_raw_coordinates is not None:
-            self.bmu_raw_coordinates_rec: Optional[npt.ArrayLike] = np.rec.array(
+            self.bmu_raw_coordinates_rec: Optional[ArrayLike] = np.rec.array(
                 bmu_raw_coordinates, dtype=bmu_type
             )
             # Returns the unique coordinates of the BMUs and for each original BMU to which unique bmus it correspond with.
@@ -159,8 +209,8 @@ class BMUMap(QObject):
         )
 
     def get_bmu_info_from_map_coordinates(
-        self, map_coordinates: npt.NDArray
-    ) -> Tuple[npt.NDArray, npt.NDArray]:
+        self, map_coordinates: NDArray
+    ) -> tuple[NDArray, NDArray]:
         # Transform the coordinates to tuples and convert to a set for faster membership testing
         raw_coordinates = np.empty_like(map_coordinates, dtype=np.float32)
 
@@ -255,76 +305,36 @@ class CommonDataModel(QtCore.QAbstractTableModel):
             Raised if the data type is not supported.
         """
         super().__init__(parent=parent)
-        self.type: str
-        self.data_instance: Union[DatasetBase, DataFrame]
-        self.data_index: Union[npt.NDArray, pd.Index]
-        self.bmu_map: BMUMap = []
+        self.columns_with_properties: Dict[str, ColumnProperties]
+        self.column_back_map: Dict[int, int] = {}
 
-        if datasource is None:
-            self.type = "None"
-            self.data_instance = None
-            self.data_columns = []
-            self.columns = []
+        self.data_source: TabularDatasource = (
+            datasource
+            if isinstance(datasource, DatasetBase)
+            else DataFrameSource(datasource)
+        )
+        self.get_values_for_column = self.data_source.get_values_for_column
 
-        elif isinstance(datasource, pd.DataFrame):
-            self.type = "Dataframe"
-            self.data_instance = datasource
-            self.data_columns = self.data_instance.columns.to_list()
+        # Store columns used in the table. Size determines number of columns
+        # Copy to remove unwanted columns (e.g., "fingerprint")
+        self.columns = [column for column in self.data_source.column_names]
 
-            # Gather info about columns, similar to ChemDataset, but slow
-            self.data_columns_with_properties = {}
-            for column in self.data_columns:
-                data = self.data_instance[column].to_list()
-                data_type = np.dtype(type(data[0]))
+        # Store columns with properties for color selector
+        # Copy to remove unwanted columns for color selector
+        self.columns_with_properties = {
+            name: ColumnProperties(*properties)
+            for name, properties in self.data_source.columns_with_properties.items()
+        }
 
-                unique = set(data)
-
-                if len(unique) <= 10:
-                    value_type = "categorical"
-                    value_range = list(unique)
-                else:
-                    try:
-                        value_type = "continuous"
-                        value_range = [min(data), max(data)]
-                    # Catch Columns with lots of different text (e.g. SMILES)
-                    except Exception:
-                        value_type = "na"
-                        value_range = []
-
-                self.data_columns_with_properties[column] = (
-                    data_type,
-                    (value_type, value_range),
-                )
-
-            def get_values_for_column(property_name: str) -> List:
-                return self.data_instance[property_name].to_list()
-
-            self.get_values_for_column = get_values_for_column
-
-        elif isinstance(datasource, DatasetBase):
-            self.type = "ChemDataset"
-            self.data_instance = datasource
-            self.data_columns = self.data_instance.columns
-            self.data_columns_with_properties = (
-                self.data_instance.columns_with_properties
-            )
-            self.get_values_for_column = self.data_instance.get_values_for_column
-
-        else:
-            raise ValueError("Unsupported data type")
-
-        # Store for later use with GUI Table view
-        self.columns = self.data_columns.copy()
-        # Store for later use with GUI Color selector
-        self.columns_with_properties = self.data_columns_with_properties.copy()
-        if "fingerprint" in self.data_columns:
+        # "fingerprint is unwanted in either"
+        if "fingerprint" in self.columns:
             self.columns.remove("fingerprint")
             self.columns_with_properties.pop("fingerprint")
 
         # Remove unwanted columns and info for colorselector
         to_pop = []  # cannot change size of dictionary during iterating over it
         for name, property in self.columns_with_properties.items():
-            if property[1][0] == "na":
+            if property.value_type == "na":
                 to_pop.append(name)
         for name in to_pop:
             self.columns_with_properties.pop(name)
@@ -332,29 +342,30 @@ class CommonDataModel(QtCore.QAbstractTableModel):
         # Map the new column indices back to the sources column indices
         if structure_info_column is not None:
             self.columns.append("Structure")
-            self.column_name_map = {}
             for i, name in enumerate(self.columns):
                 if name == "Structure":
-                    self.column_name_map[i] = self.data_columns.index(
+                    # Used indexing into the data source's column names to map the new column index to the source column index
+                    self.column_back_map[i] = self.data_source.column_names.index(
                         structure_info_column
                     )
                     self.structure_column_id = i
 
                 else:
-                    self.column_name_map[i] = self.data_columns.index(name)
-            self.structure_info_column_id = self.columns.index(structure_info_column)
+                    self.column_back_map[i] = self.data_source.column_names.index(name)
+            self.structure_info_column_id = self.data_source.column_names.index(
+                structure_info_column
+            )
         else:
-            self.column_name_map = {}
             for i, name in enumerate(self.columns):
-                self.column_name_map[i] = self.data_columns.index(name)
+                self.column_back_map[i] = self.data_source.column_names.index(name)
             self.structure_column_id = None
             self.structure_info_column_id = None
 
     def rowCount(self, /, parent=...) -> int:
-        return len(self.data_instance) if self.data_instance is not None else 0
+        return len(self.data_source)
 
     def columnCount(self, /, parent=...) -> int:
-        return len(self.columns) if self.columns is not None else 0
+        return len(self.columns)
 
     def headerData(self, section, orientation, /, role=...):
         if role == QtCore.Qt.ItemDataRole.DisplayRole:
@@ -370,18 +381,13 @@ class CommonDataModel(QtCore.QAbstractTableModel):
         if not index.isValid():
             return None
 
+        data_column = self.column_back_map[column]
+        datapoint = self.data_source.get_value(row, data_column)
+
         if (
             role == QtCore.Qt.ItemDataRole.DecorationRole
             and column == self.structure_column_id
         ):
-            data_column = self.column_name_map[column]
-            if self.type == "None":
-                return None
-            elif self.type == "ChemDataset":
-                datapoint = self.data_instance.get_value(row, data_column)
-            elif self.type == "Dataframe":
-                datapoint = self.data_instance.iloc[row, data_column]
-
             compound_image = self.create_CompoundImage(datapoint)
             return compound_image
 
@@ -389,14 +395,6 @@ class CommonDataModel(QtCore.QAbstractTableModel):
             role == QtCore.Qt.ItemDataRole.DisplayRole
             and column != self.structure_column_id
         ):
-            data_column = self.column_name_map[column]
-            if self.type == "None":
-                return None
-            elif self.type == "ChemDataset":
-                datapoint = self.data_instance.get_value(row, data_column)
-            elif self.type == "Dataframe":
-                datapoint = self.data_instance.iloc[row, data_column]
-
             return str(
                 datapoint
             )  # Conversion to string not optimal, as orignial dtype might be needed later
@@ -421,7 +419,9 @@ class FilterModel(QtCore.QAbstractProxyModel):
         super().__init__(parent=parent)
         super().setSourceModel(sourceModel)
         self.columns = self.sourceModel().columns
-        self.columns_with_properties = self.sourceModel().columns_with_properties
+        self.columns_with_properties: Dict[str, ColumnProperties] = (
+            self.sourceModel().columns_with_properties
+        )
         self.selected_rows: List[int] = []
 
         self.structure_column_id = self.sourceModel().structure_column_id
@@ -460,7 +460,7 @@ class FilterModel(QtCore.QAbstractProxyModel):
         return self.sourceModel().data(base_index, role)
 
     @Slot(list)
-    def set_selected_rows(self, rows: npt.NDArray[np.int64]) -> None:
+    def set_selected_rows(self, rows: NDArray[np.int64]) -> None:
         self.beginResetModel()
         self.selected_rows = rows.flatten().tolist()
         self.endResetModel()
@@ -504,14 +504,13 @@ class BMUColors(QObject):
         self.recolor_bmus(colors)
 
     @Slot(list)
-    def update_bmu_colors_categorical(self, cmap):
-        property_name, property_cmap = cmap
+    def update_bmu_colors_categorical(self, property_name, category_to_color_mapping):
         bmu_id_for_datapoint = self.bmu_map.index_to_unique_mapping
 
         # dont use prediefinde bins and reconstruct to ensure order of category and selected color is kept
         category_bins = []
         category_colors = []
-        for category, color in property_cmap.items():
+        for category, color in category_to_color_mapping.items():
             category_bins.append(category)
             category_colors.append(color.getRgb()[:3])
         category_colors = np.asarray(category_colors, dtype=np.uint8)
@@ -556,9 +555,7 @@ class BMUColors(QObject):
         self.colors_updated.emit(self.current_colors)
 
     @staticmethod
-    def average_for_coordinate(
-        values: npt.NDArray, coordinate_id: npt.NDArray
-    ) -> npt.NDArray:
+    def average_for_coordinate(values: NDArray, coordinate_id: NDArray) -> NDArray:
         # Use bincount with weights to calculate sums for each unique index
         sums = np.bincount(coordinate_id, weights=values)
         # Use bincount to calculate counts for each unique index
@@ -569,11 +566,11 @@ class BMUColors(QObject):
 
     @staticmethod
     def ratio_for_coordinate(
-        values: npt.NDArray,
-        bmu_id_for_datapoint: npt.NDArray,
+        values: NDArray,
+        bmu_id_for_datapoint: NDArray,
         bins: list,
         num_bmus: int,
-    ) -> npt.NDArray:
+    ) -> NDArray:
         # Initialize result array
         num_bins = len(bins)
         occurances = np.zeros((num_bmus, num_bins), dtype=int)

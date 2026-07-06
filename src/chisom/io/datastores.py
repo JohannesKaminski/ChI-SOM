@@ -8,10 +8,14 @@ Created on Tue Mar 13 2024
 
 import warnings
 from abc import ABC, abstractmethod
-from typing import Callable, Dict, Iterable, List, Optional, Tuple
+from cmath import e
+from typing import Callable, Collection, Dict, List, Optional, Union
 
 import numpy as np
 import tables
+from numpy.typing import NDArray
+
+from chisom._interface._types import ColumnProperties
 
 # Fitler out repetitive warnings
 warnings.filterwarnings("ignore", category=UserWarning, message="The codec `vlen-utf8`")
@@ -42,9 +46,8 @@ class DatasetBase(ABC):
         self.fingerprint_min: float
         self.fingerprint_max: float
 
-        self.columns_with_properties: Dict[
-            str, Tuple[np.dtype, Tuple[str, List]]
-        ]  # Storing information on the stored properties in the format: dict(column_name: (dtype, (value_type, [categories/ranges])))
+        self.columns_with_properties: Dict[str, ColumnProperties]
+        # Storing information on the stored properties in the format: dict(column_name: (dtype, (value_type, [categories/ranges])))
 
         self.filepath = filepath
 
@@ -71,32 +74,29 @@ class DatasetBase(ABC):
             return unpack
 
     @property
-    def columns(self) -> List[str]:
+    def column_names(self) -> List[str]:
         return list(self.columns_with_properties.keys())
 
     @property
-    def index(self):
-        return np.array(list(range(self.total_items)))
+    def index(self) -> NDArray[np.int32]:
+        return np.arange(self.total_items, dtype=np.int32)
 
     @abstractmethod
-    def __getitem__(self, idx):
-        pass
+    def __getitem__(self, row_idx: int) -> NDArray: ...
 
     @abstractmethod
-    def get_value(self, idx, column):
-        pass
+    def get_value(
+        self, row_idc: Union[int, Collection[int]], column_idx: int
+    ) -> NDArray: ...
 
     @abstractmethod
-    def _get_values(self, iterable):
-        pass
+    def _get_values(self, row_idc: Collection[int], column_idx: int) -> NDArray: ...
 
     @abstractmethod
-    def get_values_for_column(self, column_name: str):
-        pass
+    def get_values_for_column(self, column: str) -> NDArray: ...
 
     @abstractmethod
-    def close(self):
-        pass
+    def close(self) -> None: ...
 
 
 class HDF5Dataset(DatasetBase):
@@ -129,10 +129,10 @@ class HDF5Dataset(DatasetBase):
 
         self._initialize_groups(group_subset)
         self.fingerprint_min = float(
-            self.columns_with_properties["fingerprint"][1][1][0]
+            self.columns_with_properties["fingerprint"].value_range[0]
         )
         self.fingerprint_max = float(
-            self.columns_with_properties["fingerprint"][1][1][1]
+            self.columns_with_properties["fingerprint"].value_range[1]
         )
 
     def _initialize_groups(self, group_subset):
@@ -157,62 +157,65 @@ class HDF5Dataset(DatasetBase):
                     data_type = np.dtype(data_type)
 
                 value_type = str(leaf.attrs["type"])
+                value_type = (
+                    "na"
+                    if value_type not in ["categorical", "continuous"]
+                    else value_type
+                )
                 value_range = list(leaf.attrs["value_range"])
 
                 # Construct on first encounter of property, update on all further encouters
                 if group_num == 0:
-                    self.columns_with_properties[leaf_name] = [
-                        data_type,
-                        [value_type, value_range],
-                    ]
+                    self.columns_with_properties[leaf_name] = ColumnProperties(
+                        data_type, value_type, value_range
+                    )
                 else:
                     current_column_state = self.columns_with_properties[leaf_name]
-                    assert current_column_state[0] == data_type
-                    assert current_column_state[1][0] == value_type
+                    assert current_column_state.dtype == data_type
+                    assert current_column_state.value_type == value_type
 
-                    current_value_range = current_column_state[1][1]
+                    current_value_range = current_column_state.value_range[1]
                     if value_type == "categorical":
-                        self.columns_with_properties[leaf_name][1][1] = list(
+                        self.columns_with_properties[leaf_name].value_range[1] = list(
                             set.union(set(current_value_range), set(value_range))
                         )
-                    elif value_type == "continuous":
-                        self.columns_with_properties[leaf_name][1][1][0] = min(
+                    elif value_type == "continous":
+                        self.columns_with_properties[leaf_name].value_range[0] = min(
                             current_value_range[0], value_range[0]
                         )
-                        self.columns_with_properties[leaf_name][1][1][1] = max(
+                        self.columns_with_properties[leaf_name].value_range[1] = max(
                             current_value_range[1], value_range[1]
                         )
                     else:
                         pass
 
-            # Add column entry for group membership
-            self.columns_with_properties["group"] = (
-                np.dtypes.StringDType(),
-                ("categorical", self.group_subset),
+            # Add column_id entry for group membership
+            self.columns_with_properties["group"] = ColumnProperties(
+                np.dtypes.StringDType(), "categorical", self.group_subset
             )
             # Update total_items with length of fingerprint array
             self.total_items += current_group._f_get_child("fingerprint").shape[0]
             self.prefix_sums = np.append(self.prefix_sums, self.total_items)
 
-        self.fingerprint_column_number = self.columns.index("fingerprint")
+        self.fingerprint_column_number = self.column_names.index("fingerprint")
 
         self.unpack = self._build_unpack(self.packed)
 
-    def __getitem__(self, row):
-        return self.get_value(row, self.fingerprint_column_number)
+    def __getitem__(self, row_idx: int):
+        return self.get_value(row_idx, self.fingerprint_column_number)
 
-    def get_value(self, row, column):
-        if isinstance(row, Iterable):
-            return self._get_values(row, column)
+    def get_value(self, row_idc: Union[int, Collection[int]], column_idx: int):
+        if isinstance(row_idc, Collection):
+            return self._get_values(row_idc, column_idx)
         else:
-            if row < 0 or row >= self.total_items:
+            if row_idc < 0 or row_idc >= self.total_items:
                 raise IndexError("Index out of range")
 
             # Find the group using binary search
             left, right = 0, len(self.prefix_sums) - 1
             while left < right:
                 mid = (left + right) // 2
-                if self.prefix_sums[mid] <= row:
+                if self.prefix_sums[mid] <= row_idc:
                     left = mid + 1
                 else:
                     right = mid
@@ -220,12 +223,12 @@ class HDF5Dataset(DatasetBase):
             group_index = left - 1  # Adjust to get correct group index
             group_name = self.group_subset[group_index]
 
-            local_index = row - self.prefix_sums[group_index]
+            local_index = row_idc - self.prefix_sums[group_index]
 
             group = self.file.root[group_name]
 
             leaves = group._v_leaves
-            column_name = self.columns[column]
+            column_name = self.column_names[column_idx]
 
             if column_name == "group":
                 return group_name
@@ -235,25 +238,25 @@ class HDF5Dataset(DatasetBase):
             else:
                 return leaves[column_name][local_index]
 
-    def _get_values(self, rows, column):
-        group_indices, local_indices = binary_search(self.prefix_sums, rows)
+    def _get_values(self, row_idc: Collection[int], column_idx: int) -> NDArray:
+        group_indices, local_indices = binary_search(self.prefix_sums, row_idc)
 
         groups_in_rows = set(group_indices)
 
-        column_name = self.columns[column]
-        column_dtype = self.columns_with_properties[column_name]
+        column_name = self.column_names[column_idx]
+        column_dtype = self.columns_with_properties[column_name].dtype
 
         if column_name != "fingerprint":
-            out = np.empty((len(rows)), dtype=column_dtype)
+            out = np.empty((len(row_idc)), dtype=column_dtype)
         else:
-            out = np.empty((len(rows), self.fingerprint_length), dtype=column_dtype)
+            out = np.empty((len(row_idc), self.fingerprint_length), dtype=column_dtype)
 
-        if self.columns[column] == "group":
+        if self.column_names[column_idx] == "group":
             for group_idx in groups_in_rows:
                 original_position = np.argwhere(group_indices == group_idx).flatten()
                 out[original_position] = self.group_subset[group_idx]
             return out
-        elif self.columns[column] == "fingerprint":
+        elif self.column_names[column_idx] == "fingerprint":
             for group_idx in groups_in_rows:
                 original_position = np.argwhere(group_indices == group_idx).flatten()
                 mol_indices = local_indices[original_position]
@@ -270,10 +273,12 @@ class HDF5Dataset(DatasetBase):
                 mol_indices = local_indices[original_position]
                 group_name = self.group_subset[group_idx]
                 leaves = self.file.root[group_name]._v_leaves
-                out[original_position] = leaves[self.columns[column]][mol_indices]
+                out[original_position] = leaves[self.column_names[column_idx]][
+                    mol_indices
+                ]
             return out
 
-    def get_values_for_column(self, column_name: str):
+    def get_values_for_column(self, column_name: str) -> NDArray:
         values = []
 
         if column_name == "group":
@@ -288,8 +293,8 @@ class HDF5Dataset(DatasetBase):
         else:
             for group_name in self.group_subset:
                 group = self.file.root[group_name]
-                if column_name in group._v_leaves.keys():
-                    values.append(group._v_leaves[column_name][:])
+                if column in group._v_leaves.keys():
+                    values.append(group._v_leaves[column][:])
 
             values_out = np.concat(values)
 

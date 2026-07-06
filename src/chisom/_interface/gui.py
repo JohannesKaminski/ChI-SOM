@@ -1,4 +1,4 @@
-from typing import Dict, Optional, Tuple, Union
+from typing import Optional, Union
 
 import numpy as np
 import numpy.typing as npt
@@ -11,8 +11,14 @@ from PySide6.QtCore import QObject, QSize, Qt, Signal, Slot
 from PySide6.QtGui import QKeySequence
 from scipy.interpolate import RegularGridInterpolator
 
+from chisom._interface._types import ColumnProperties
 from chisom._interface.helpers import CyclicGreen, EarthColorMap
-from chisom._interface.models import BMUColors, BMUMap, CommonDataModel, FilterModel
+from chisom._interface.models import (
+    BMUColors,
+    BMUMap,
+    CommonDataModel,
+    FilterModel,
+)
 from chisom.io.datastores import DatasetBase
 
 # NOTE: Ideally, used QtPixmapCache to store a certain amout of images in memory
@@ -180,7 +186,10 @@ class CompoundTable(W.QTableView):
     def setModel(self, model):
         super().setModel(model)
 
-        if hasattr(model, "structure_column_id") and model.structure_column_id != None:
+        if (
+            hasattr(model, "structure_column_id")
+            and model.structure_column_id is not None
+        ):
             self.model_has_structure_column = True
             structure_column = model.structure_column_id
             self.structure_info_column_id = model.structure_info_column_id
@@ -304,11 +313,9 @@ class CatergoryPair(W.QWidget):
 
 
 class ColorCategoryWidget(W.QGroupBox):
-    cmap_set = Signal(dict)
+    category_to_color_mapping_set = Signal(dict)
 
-    def __init__(
-        self, data_columns: Dict[str, Tuple[np.dtype, Tuple[str, list]]], parent=None
-    ):
+    def __init__(self, data_columns: dict[str, ColumnProperties], parent=None):
         super().__init__(parent=parent)
 
         self.currently_selected = None
@@ -331,7 +338,7 @@ class ColorCategoryWidget(W.QGroupBox):
         # else, create a list of the column available categories and a colorbutton instance
         elif name in self.data_columns:
             color_list = []
-            for category in self.data_columns[name][1][1]:
+            for category in self.data_columns[name].value_range:
                 pair = CatergoryPair(category)
                 color_list.append(pair)
             self.know_columns[name] = (
@@ -363,10 +370,10 @@ class ColorCategoryWidget(W.QGroupBox):
 
     @Slot(bool)
     def _property_set(self):
-        cmap = {}
+        catergory_to_color_mapping = {}
         for widget in self.know_columns[self.currently_selected]:
-            cmap[widget.category] = widget.button._color
-        self.cmap_set.emit(cmap)
+            catergory_to_color_mapping[widget.category] = widget.button._color
+        self.category_to_color_mapping_set.emit(catergory_to_color_mapping)
 
 
 class ControlWidget(W.QGroupBox):
@@ -379,8 +386,8 @@ class ControlWidget(W.QGroupBox):
 
     def __init__(
         self,
-        cmaps: Dict[str, str],
-        data_columns: Dict,
+        cmaps: dict[str, str],
+        data_columns: dict[str, ColumnProperties],
         bmu_colors: BMUColors,
         parent=None,
     ):
@@ -436,7 +443,9 @@ class ControlWidget(W.QGroupBox):
         self.continuous_color.setVisible(False)
         self.main_layout.addWidget(self.continuous_color)
 
-        self.category_color.cmap_set.connect(self.color_selected_categorical)
+        self.category_color.category_to_color_mapping_set.connect(
+            self.color_selected_categorical
+        )
         self.continuous_color.textActivated.connect(self.color_selected_continuous)
 
         self.main_layout.addStretch()
@@ -451,21 +460,26 @@ class ControlWidget(W.QGroupBox):
         self.continuous_color_selected.emit(current_property, selected_cmap)
 
     @Slot(dict)
-    def color_selected_categorical(self, cmap: dict):
+    def color_selected_categorical(self, category_to_color_mapping: dict[str, str]):
         current_property = self.bmu_color_by_selector.currentText()
         self.colorbar_visible.emit(False)
-        self.categorical_color_selected.emit(current_property, cmap)
+        self.categorical_color_selected.emit(
+            current_property, category_to_color_mapping
+        )
 
     @Slot(str)
     def select_property(self, name):
-        value_type = self.data_columns[name][1][0]
+        value_type = self.data_columns[name].value_type
         if value_type == "categorical":
             self.continuous_color.setVisible(False)
             self.category_color.select_property(name)
             self.category_color.setVisible(True)
-        else:
+        elif value_type == "continuous":
             self.category_color.setVisible(False)
             self.continuous_color.setVisible(True)
+        else:
+            self.category_color.setVisible(False)
+            self.continuous_color.setVisible(False)
 
     @Slot(int, int)
     def set_bmu_state(self, bmu_state: Qt.CheckState, bmu_size: int):
@@ -502,7 +516,7 @@ class Roi(pg.PolyLineROI):
         self.sigRegionChangeFinished.connect(self._roi_changed)
         self.previous_positions = []
 
-    def addPoint(self, point: Tuple[float, float]):
+    def addPoint(self, point: tuple[float, float]):
         self.previous_positions = [
             tuple(handle["item"].pos()) for handle in self.handles
         ]
@@ -541,7 +555,7 @@ class UpperView(W.QWidget):
         umap: UMap,
         bmu_map: BMUMap,
         bmu_colors: BMUColors,
-        data_columns: Dict,
+        data_columns: dict[str, ColumnProperties],
         parent=None,
     ):
         super().__init__(parent=parent)
@@ -734,7 +748,7 @@ class MainSomWindow(W.QMainWindow):
         self,
         umatrix: npt.NDArray,
         bmu_coordinates: Optional[npt.NDArray],
-        data: Union[DatasetBase, DataFrame],
+        data: Optional[DatasetBase | DataFrame],
         structure_info_column: Optional[str],
         scaling_factor: int,
     ):
@@ -742,13 +756,10 @@ class MainSomWindow(W.QMainWindow):
         self.setMinimumSize(QSize(800, 600))
         self.setWindowTitle("ChI-SOM")
 
-        self.base_model: Optional[CommonDataModel] = (
-            CommonDataModel(
-                data, structure_info_column=structure_info_column, parent=self
-            )
-            if data is not None
-            else None
+        self.base_model = CommonDataModel(
+            data, structure_info_column=structure_info_column, parent=self
         )
+
         self.data_model = FilterModel(self.base_model, parent=self)
 
         if umatrix.ndim == 2:
