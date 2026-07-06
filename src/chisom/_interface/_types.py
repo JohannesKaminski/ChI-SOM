@@ -21,6 +21,24 @@ class ColumnProperties(NamedTuple):
     value_range: list
 
 
+class BMUCompositionCategorical(NamedTuple):
+    category_ratio: NDArray[np.float16]
+    alphas: dict[str, NDArray[np.uint8]]
+
+
+class BMUCompositionContinuous(NamedTuple):
+    average: NDArray[np.float16]
+    minimum: float
+    maximum: float
+
+
+@runtime_checkable
+class ColorDataSource(Protocol):
+    columns_with_properties: dict[str, ColumnProperties]
+
+    def get_values_for_column(self, column_name: str) -> Union[Collection, NDArray]: ...
+
+
 @runtime_checkable
 class TabularDatasource(Protocol):
     columns_with_properties: dict[str, ColumnProperties]

@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Collection, Dict, List, Optional, Union
 
 import numpy as np
 import pandas as pd
@@ -14,7 +14,14 @@ from rdkit.Chem import Draw as rdDraw
 
 from chisom.io.datastores import DatasetBase
 
-from ._types import ColumnProperties, TabularDatasource, bmu_type
+from ._types import (
+    BMUCompositionCategorical,
+    BMUCompositionContinuous,
+    ColorDataSource,
+    ColumnProperties,
+    TabularDatasource,
+    bmu_type,
+)
 from .helpers import create_bmu_composition, min_max
 
 
@@ -98,6 +105,12 @@ class RatioWeightingSchemes:
         excess[excess < 0] = 0
         return excess.flatten()
 
+    SCHEMES = {
+        "Gini Coefficient": gini_coefficient,
+        "Excess Coefficient (Absolute)": excess_coefficient_absolute,
+        "Excess Coefficient (Relative)": excess_coefficient_relative,
+    }
+    DEFAULT_SCHEME = "Excess Coefficient (Absolute)"
 
 
 class DataFrameSource(QObject):
@@ -203,7 +216,7 @@ class BMUMap(QObject):
         self.unique_bmu_coordinates_rec: NDArray = np.rec.array(
             np.empty(0, dtype=bmu_type)
         )
-        self.index_to_unique_mapping: NDArray[np.int32] = np.empty(0, dtype=np.int32)
+        self.index_to_unique_mapping: NDArray[np.uint32] = np.empty(0, dtype=np.uint32)
 
         self.scaling_factor: int = scaling_factor
         self.padding: int = 0
@@ -219,7 +232,9 @@ class BMUMap(QObject):
                 bmu_raw_coordinates, axis=0, return_inverse=True
             )
             self.unique_bmu_coordinates = np.astype(_unique_bmu_coordinates, np.uint16)
-            self.index_to_unique_mapping = np.astype(_index_to_unique_mapping, np.int32)
+            self.index_to_unique_mapping = np.astype(
+                _index_to_unique_mapping, np.uint32
+            )
             # Transform to set of tuples for faster lookup
             self.unique_bmu_coordinates_set = set(
                 tuple(coord) for coord in self.unique_bmu_coordinates
@@ -515,43 +530,57 @@ class BMUColors(QObject):
     colors_updated = Signal(list)
     cmap_updated = Signal(list)
 
-    def __init__(self, datamodel: FilterModel, bmu_map: BMUMap):
+    def __init__(self, datamodel: ColorDataSource, bmu_data_map: BMUMap):
         super().__init__()
         self.datamodel = datamodel
-        self.bmu_map = bmu_map
+        self.bmu_data_map = bmu_data_map
         self.properies = self.datamodel.columns_with_properties
 
         self.current_colors: List[QBrush] = [mkBrush("k")] * len(
-            self.bmu_map.bmu_map_coordinates
+            self.bmu_data_map.bmu_map_coordinates
         )
 
         # For each column, store the distribution results to safe time
-        self.bmu_ratio_mapping = {}
+        self.bmu_compositions_categorical: dict[str, BMUCompositionCategorical] = {}
+        self.bmu_compositions_continuous: dict[str, BMUCompositionContinuous] = {}
 
     @Slot(list)
     def update_bmu_colors_gradient(self, property_info):
-        property_name, property_cmap = property_info
-        bmu_id_for_datapoint = self.bmu_map.index_to_unique_mapping
 
-        if property_name not in self.bmu_ratio_mapping:
+        # If the BMU map is empty, there are no BMU coordinates to update
+        if len(self.bmu_data_map) == 0:
+            return
+
+        property_name, property_cmap = property_info
+        bmu_id_for_datapoint = self.bmu_data_map.index_to_unique_mapping
+
+        if property_name not in self.bmu_compositions_continuous.keys():
             data = self.datamodel.get_values_for_column(property_name)
 
             bmu_average = self.average_for_coordinate(data, bmu_id_for_datapoint)
             # MinMax, so it is usable by colormap
             bmu_average, minimum, maximum = min_max(bmu_average)
-            self.bmu_ratio_mapping[property_name] = (bmu_average, minimum, maximum)
+            self.bmu_compositions_continuous[property_name] = BMUCompositionContinuous(
+                bmu_average, minimum, maximum
+            )
 
-        bmu_average, minimum, maximum = self.bmu_ratio_mapping[property_name]
+        bmu_average, minimum, maximum = self.bmu_compositions_continuous[property_name]
         colors = property_cmap.map(bmu_average)
 
         self.cmap_updated.emit([property_cmap, minimum, maximum, property_name])
         self.recolor_bmus(colors)
 
-    @Slot(list)
-    def update_bmu_colors_categorical(self, property_name, category_to_color_mapping):
-        bmu_id_for_datapoint = self.bmu_map.index_to_unique_mapping
+    @Slot(str, list, str)
+    def update_bmu_colors_categorical(
+        self,
+        property_name: str,
+        category_to_color_mapping: dict,
+        scheme: str = RatioWeightingSchemes.DEFAULT_SCHEME,
+    ):
 
-        # dont use prediefinde bins and reconstruct to ensure order of category and selected color is kept
+        bmu_id_for_datapoint = self.bmu_data_map.index_to_unique_mapping
+
+        # Don't use predefined bins and reconstruct to ensure order of category and selected color is kept
         category_bins = []
         category_colors = []
         for category, color in category_to_color_mapping.items():
@@ -559,10 +588,10 @@ class BMUColors(QObject):
             category_colors.append(color.getRgb()[:3])
         category_colors = np.asarray(category_colors, dtype=np.uint8)
 
-        if property_name not in self.bmu_ratio_mapping.keys():
+        if property_name not in self.bmu_compositions_categorical.keys():
             data = self.datamodel.get_values_for_column(property_name)
 
-            num_bmus = len(self.bmu_map)
+            num_bmus = len(self.bmu_data_map)
 
             # Calculate how many datapoint of each category fall onto every BMU
             bmu_composition_ratio = self.ratio_for_coordinate(
@@ -573,15 +602,27 @@ class BMUColors(QObject):
             primary_catergory = np.argmax(bmu_composition_ratio, axis=1)
 
             # Calculate the alphas for the classes based on how much stronger the strongest category is than the others
-            alpha = RatioWeightingSchemes.excess_coefficient_absolute(
-                bmu_composition_ratio
-            )
+            alpha = RatioWeightingSchemes.SCHEMES[scheme](bmu_composition_ratio)
             # Map alpha values to ints in the range [0, 255]
             alpha = np.clip((alpha * 255), 0, 255).astype(np.uint8)
 
-            self.bmu_ratio_mapping[property_name] = (primary_catergory, alpha)
+            self.bmu_compositions_categorical[property_name] = (
+                BMUCompositionCategorical(bmu_composition_ratio, {scheme: alpha})
+            )
 
-        primary_catergory, alpha = self.bmu_ratio_mapping[property_name]
+        elif scheme not in self.bmu_compositions_categorical[property_name].alphas:
+            bmu_composition_ratio = self.bmu_compositions_categorical[
+                property_name
+            ].category_ratio
+            alpha = RatioWeightingSchemes.SCHEMES[scheme](bmu_composition_ratio)
+            alpha = np.clip((alpha * 255), 0, 255).astype(np.uint8)
+            self.bmu_compositions_categorical[property_name].alphas[scheme] = alpha
+
+        bmu_composition = self.bmu_compositions_categorical[property_name]
+        bmu_composition_ratio = bmu_composition.category_ratio
+        alpha = bmu_composition.alphas[scheme]
+
+        primary_catergory = np.argmax(bmu_composition_ratio, axis=1)
         colors = np.zeros((len(primary_catergory), 3), dtype=np.uint8)
 
         # Assign colors based on class_labels
@@ -599,9 +640,12 @@ class BMUColors(QObject):
         self.colors_updated.emit(self.current_colors)
 
     @staticmethod
-    def average_for_coordinate(values: NDArray, coordinate_id: NDArray) -> NDArray:
+    def average_for_coordinate(
+        values: Union[NDArray, Collection], coordinate_id: NDArray
+    ) -> NDArray:
         # Use bincount with weights to calculate sums for each unique index
-        sums = np.bincount(coordinate_id, weights=values)
+        _values = np.asarray(values)
+        sums = np.bincount(coordinate_id, weights=_values)
         # Use bincount to calculate counts for each unique index
         counts = np.bincount(coordinate_id)
 
@@ -610,17 +654,18 @@ class BMUColors(QObject):
 
     @staticmethod
     def ratio_for_coordinate(
-        values: NDArray,
-        bmu_id_for_datapoint: NDArray,
+        values: Union[NDArray, Collection],
+        bmu_id_for_datapoint: NDArray[np.uint32],
         bins: list,
         num_bmus: int,
-    ) -> NDArray:
+    ) -> NDArray[np.float16]:
         # Initialize result array
         num_bins = len(bins)
-        occurances = np.zeros((num_bmus, num_bins), dtype=int)
+        occurances = np.zeros((num_bmus, num_bins), dtype=np.uint16)
+        _values = np.asarray(values)
 
-        _, class_as_id = np.unique_inverse(values)
-        class_as_id = np.astype(class_as_id, np.int32)
+        _, class_as_id = np.unique_inverse(_values)
+        class_as_id = np.astype(class_as_id, np.uint16)
 
         # Process each bmu
         occurances = create_bmu_composition(
@@ -628,7 +673,11 @@ class BMUColors(QObject):
         )
 
         counts = np.sum(occurances, axis=1)
-        ratios = occurances / counts[:, np.newaxis]
+        ratios = np.divide(
+            occurances,
+            counts[:, np.newaxis],
+            out=np.zeros_like(occurances, dtype=np.float16),
+        )
         ratios[np.isnan(ratios)] = 0
 
         return ratios
