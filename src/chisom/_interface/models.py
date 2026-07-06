@@ -7,7 +7,7 @@ from pandas import DataFrame
 from PIL import ImageQt
 from pyqtgraph import mkBrush
 from PySide6 import QtCore
-from PySide6.QtCore import QObject, Signal, Slot
+from PySide6.QtCore import QModelIndex, QObject, QPersistentModelIndex, Qt, Signal, Slot
 from PySide6.QtGui import QBrush, QPixmap
 from rdkit import Chem
 from rdkit.Chem import Draw as rdDraw
@@ -208,7 +208,7 @@ class BMUMap(QObject):
         self.scaling_factor: int = scaling_factor
         self.padding: int = 0
 
-        self.bmu_state: int  # Used to track the visibility of the BMUs in the scatterplot and button position in the control widget
+        self.bmu_state: Qt.CheckState  # Used to track the visibility of the BMUs in the scatterplot and button position in the control widget
 
         if bmu_raw_coordinates is not None:
             self.bmu_raw_coordinates_rec = np.rec.array(
@@ -228,9 +228,9 @@ class BMUMap(QObject):
             self.unique_bmu_coordinates_rec = np.rec.array(
                 self.unique_bmu_coordinates, dtype=bmu_type
             )
-            self.bmu_state = 2
+            self.bmu_state = Qt.CheckState.Checked
         else:
-            self.bmu_state = 1
+            self.bmu_state = Qt.CheckState.Unchecked
 
         self.calculate_bmu_map_coordinates()
 
@@ -447,18 +447,19 @@ class FilterModel(QtCore.QAbstractProxyModel):
     def __init__(self, sourceModel: CommonDataModel, parent=None) -> None:
         super().__init__(parent=parent)
         super().setSourceModel(sourceModel)
-        self.columns = self.sourceModel().columns
+
+        self._source_model = sourceModel
+        self.columns = self._source_model.columns
         self.columns_with_properties: Dict[str, ColumnProperties] = (
-            self.sourceModel().columns_with_properties
+            self._source_model.columns_with_properties
         )
         self.selected_rows: List[int] = []
 
-        self.structure_column_id = self.sourceModel().structure_column_id
-        self.structure_info_column_id = self.sourceModel().structure_info_column_id
-        self.get_values_for_column = self.sourceModel().get_values_for_column
+        self.structure_column_id = self._source_model.structure_column_id
+        self.structure_info_column_id = self._source_model.structure_info_column_id
 
-    def parent(self, child):
-        return QtCore.QModelIndex()
+    def parent(self, child: QModelIndex | QPersistentModelIndex, /) -> QModelIndex:  # type: ignore[invalid-method-override] due to ty incompatibility
+        return QModelIndex()
 
     def mapToSource(self, proxyIndex):
         if not proxyIndex.isValid() or self.sourceModel() is None:
@@ -475,13 +476,23 @@ class FilterModel(QtCore.QAbstractProxyModel):
         except ValueError:
             return QtCore.QModelIndex()
 
-    def rowCount(self, parent=QtCore.QModelIndex()) -> int:
+    def rowCount(
+        self, parent: QModelIndex | QPersistentModelIndex = QtCore.QModelIndex()
+    ) -> int:
         return len(self.selected_rows)
 
-    def columnCount(self, parent=QtCore.QModelIndex()) -> int:
+    def columnCount(
+        self, parent: QModelIndex | QPersistentModelIndex = QtCore.QModelIndex()
+    ) -> int:
         return self.sourceModel().columnCount(parent)
 
-    def index(self, row, column, /, parent=...):
+    def index(
+        self,
+        row: int,
+        column: int,
+        /,
+        parent: QModelIndex | QPersistentModelIndex = QModelIndex(),
+    ) -> QModelIndex:
         return self.createIndex(row, column)
 
     def data(self, proxyIndex, /, role=...):
@@ -494,6 +505,9 @@ class FilterModel(QtCore.QAbstractProxyModel):
         self.selected_rows = rows.flatten().tolist()
         self.endResetModel()
         self.selection_changed.emit()
+
+    def get_values_for_column(self, column_name: str) -> NDArray:
+        return self._source_model.get_values_for_column(column_name)
 
 
 class BMUColors(QObject):
