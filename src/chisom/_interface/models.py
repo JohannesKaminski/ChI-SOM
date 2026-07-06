@@ -163,29 +163,38 @@ class BMUMap(QObject):
         self,
         bmu_raw_coordinates: Optional[NDArray[np.float16]],
         scaling_factor: int,
-        data_index,
         parent: Optional[QObject] = None,
     ) -> None:
         super().__init__(parent=parent)
-        self.bmu_map_coordinates: NDArray
-        self.unique_bmu_coordinates: NDArray
-        self.index_to_unique_mapping: NDArray[np.int32]
+        self.bmu_map_coordinates: NDArray[np.float16] = np.empty(
+            (0, 2), dtype=np.float16
+        )
+        self.bmu_raw_coordinates_rec: NDArray = np.empty((0, 2), dtype=bmu_type)
+
+        self.unique_bmu_coordinates: NDArray[np.uint16] = np.empty(
+            (0, 2), dtype=np.uint16
+        )
+        self.unique_bmu_coordinates_set: set[tuple[int, int]] = set()
+        self.unique_bmu_coordinates_rec: NDArray = np.rec.array(
+            np.empty(0, dtype=bmu_type)
+        )
+        self.index_to_unique_mapping: NDArray[np.int32] = np.empty(0, dtype=np.int32)
+
         self.scaling_factor: int = scaling_factor
         self.padding: int = 0
 
         self.bmu_state: int  # Used to track the visibility of the BMUs in the scatterplot and button position in the control widget
 
         if bmu_raw_coordinates is not None:
-            self.bmu_raw_coordinates_rec: Optional[ArrayLike] = np.rec.array(
+            self.bmu_raw_coordinates_rec = np.rec.array(
                 bmu_raw_coordinates, dtype=bmu_type
             )
             # Returns the unique coordinates of the BMUs and for each original BMU to which unique bmus it correspond with.
-            self.unique_bmu_coordinates, self.index_to_unique_mapping = np.unique(
+            _unique_bmu_coordinates, _index_to_unique_mapping = np.unique(
                 bmu_raw_coordinates, axis=0, return_inverse=True
             )
-            self.index_to_unique_mapping = np.astype(
-                self.index_to_unique_mapping, np.int32
-            )
+            self.unique_bmu_coordinates = np.astype(_unique_bmu_coordinates, np.uint16)
+            self.index_to_unique_mapping = np.astype(_index_to_unique_mapping, np.int32)
             # Transform to set of tuples for faster lookup
             self.unique_bmu_coordinates_set = set(
                 tuple(coord) for coord in self.unique_bmu_coordinates
@@ -197,16 +206,11 @@ class BMUMap(QObject):
             self.bmu_state = 2
         else:
             self.bmu_state = 1
-            self.bmu_raw_coordinates_rec = None
 
         self.calculate_bmu_map_coordinates()
 
     def __len__(self) -> int:
-        return (
-            len(self.unique_bmu_coordinates)
-            if self.bmu_raw_coordinates_rec is not None
-            else 0
-        )
+        return len(self.unique_bmu_coordinates)
 
     def get_bmu_info_from_map_coordinates(
         self, map_coordinates: NDArray
@@ -340,7 +344,7 @@ class CommonDataModel(QtCore.QAbstractTableModel):
             self.columns_with_properties.pop(name)
 
         # Map the new column indices back to the sources column indices
-        if structure_info_column is not None:
+        if structure_info_column in self.data_source.column_names:
             self.columns.append("Structure")
             for i, name in enumerate(self.columns):
                 if name == "Structure":

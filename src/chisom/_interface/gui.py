@@ -770,7 +770,6 @@ class MainSomWindow(W.QMainWindow):
         self.umap = UMap(umatrix, scaling_factor=scaling_factor, parent=self)
         self.bmu_map = BMUMap(
             bmu_raw_coordinates=bmu_coordinates,
-            data_index=data.index,
             scaling_factor=scaling_factor,
         )
         bmu_colors = BMUColors(self.data_model, self.bmu_map)
