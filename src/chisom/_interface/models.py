@@ -371,16 +371,17 @@ class CommonDataModel(QtCore.QAbstractTableModel):
         # Map the new column indices back to the sources column indices
         if structure_info_column in self.data_source.column_names:
             self.columns.append("Structure")
+            data_source_names = self.data_source.column_names
             for i, name in enumerate(self.columns):
                 if name == "Structure":
                     # Used indexing into the data source's column names to map the new column index to the source column index
-                    self.column_back_map[i] = self.data_source.column_names.index(
+                    self.column_back_map[i] = data_source_names.index(
                         structure_info_column
                     )
                     self.structure_column_id = i
 
                 else:
-                    self.column_back_map[i] = self.data_source.column_names.index(name)
+                    self.column_back_map[i] = data_source_names.index(name)
             self.structure_info_column_id = self.data_source.column_names.index(
                 structure_info_column
             )
