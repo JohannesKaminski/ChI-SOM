@@ -387,7 +387,7 @@ class ControlWidget(W.QGroupBox):
 
     def __init__(
         self,
-        cmaps: dict[str, str],
+        cmaps: dict[str, pg.ColorMap],
         data_columns: dict[str, ColumnProperties],
         bmu_colors: BMUColors,
         parent=None,
