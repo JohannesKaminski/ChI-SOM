@@ -356,9 +356,10 @@ class ColorCategoryWidget(W.QGroupBox):
             item = self.category_list.itemAt(0)
             if item is not None:
                 widget = item.widget()
-                self.category_list.removeWidget(widget)
-                # only set invisible, as it is the same object as in self.known_columns
-                widget.setVisible(False)
+                if widget is not None:
+                    self.category_list.removeWidget(widget)
+                    # only set invisible, as it is the same object as in self.known_columns
+                    widget.setVisible(False)
 
         # rebuild layout from list
         for item in color_list:
