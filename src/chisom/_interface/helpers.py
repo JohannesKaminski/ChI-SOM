@@ -8,6 +8,7 @@ Created on Thu Apr  7 16:02:48 2022
 
 import numpy as np
 from numba import jit, prange
+from numpy.typing import NDArray
 from pyqtgraph import ColorMap
 
 
@@ -73,9 +74,14 @@ EarthColorMap = ColorMap(
 CyclicGreen = ColorMap(pos=[0, 0.5, 1], color=["#FFFFFF", "#268086", "#FFFFFF"])
 
 
-@jit(cache=True)
-def create_bmu_composition(bmu_id_for_datapoint, class_as_id, num_bmus, num_bins):
-    occurances = np.zeros((num_bmus, num_bins), dtype=np.int32)
+@jit(cache=True, parallel=True)
+def create_bmu_composition(
+    bmu_id_for_datapoint: NDArray[np.uint32],
+    class_as_id: NDArray[np.uint16],
+    num_bmus: int,
+    num_bins: int,
+) -> NDArray[np.uint16]:
+    occurances = np.zeros((num_bmus, num_bins), dtype=np.uint16)
 
     for unique_color in prange(num_bins):
         mask = class_as_id == unique_color
