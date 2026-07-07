@@ -1,17 +1,26 @@
-from typing import Any, Collection, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
 from pandas import DataFrame
 from PIL import ImageQt
-from pyqtgraph import mkBrush
+from pyqtgraph import ColorMap, mkBrush
 from PySide6 import QtCore
 from PySide6.QtCore import QModelIndex, QObject, QPersistentModelIndex, Qt, Signal, Slot
 from PySide6.QtGui import QBrush, QPixmap
 from rdkit import Chem
 from rdkit.Chem import Draw as rdDraw
 
+from chisom._core.render import (
+    CYCLIC_COLORS,
+    CYCLIC_POS,
+    EARTH_COLORS,
+    EARTH_POS,
+    RatioWeighting,
+    bmu_map_coordinates,
+    min_max,
+)
 from chisom.io.datastores import DatasetBase
 
 from ._types import (
@@ -22,95 +31,10 @@ from ._types import (
     TabularDatasource,
     bmu_type,
 )
-from .helpers import create_bmu_composition, min_max
 
+EarthColorMap = ColorMap(pos=EARTH_POS, color=EARTH_COLORS)
 
-class RatioWeightingSchemes:
-    @staticmethod
-    def gini_coefficient(x, axis=1):
-        """
-        Compute Gini coefficient along specified axis of a 2D matrix,
-        considering only non-zero values. Uses vectorized operations for efficiency.
-
-        Parameters:
-        -----------
-        x : 2D numpy array or array-like
-            Input matrix
-        axis : int, default=1
-            Axis along which to compute the Gini coefficient (0 for rows, 1 for columns)
-
-        Returns:
-        --------
-        numpy.ndarray
-            Array of Gini coefficients for each row/column
-        """
-        x = np.asarray(x)
-
-        # Create a mask for non-zero values
-        nonzero_mask = x != 0
-
-        # Count non-zero elements along the specified axis
-        n_nonzero = np.sum(nonzero_mask, axis=axis)
-
-        # Create arrays to store results
-        result = np.ones(x.shape[1 - axis])
-
-        # For rows/slices with at least 2 non-zero values
-        valid_indices = np.where(n_nonzero >= 2)[0]
-
-        if len(valid_indices) > 0:
-            # Process each valid row/column
-            for idx in valid_indices:
-                if axis == 1:
-                    # Get the non-zero values for this row
-                    values = x[idx][nonzero_mask[idx]]
-                else:
-                    # Get the non-zero values for this column
-                    values = x[:, idx][nonzero_mask[:, idx]]
-
-                # Efficient computation of all pairwise absolute differences
-                diff_matrix = np.abs(np.subtract.outer(values, values))
-
-                # Calculate the Gini coefficient
-                gini = np.sum(diff_matrix) / (2 * len(values) * np.sum(values))
-                result[idx] = gini
-
-        return result
-
-    @staticmethod
-    def excess_coefficient_absolute(x, axis=1):
-        # Get indices that sort the array along the specified axis
-        if x.shape[axis] < 2:
-            return np.ones(len(x))
-        sorted_x = np.argsort(x, axis=axis)
-        # Get the largest and second largest values along the specified axis
-        largest_x = np.take_along_axis(x, sorted_x[:, -1:], axis=axis)
-        second_largest_x = np.take_along_axis(x, sorted_x[:, -2:-1], axis=axis)
-        # Calculate the excess
-        excess = largest_x - second_largest_x
-        excess[excess < 0] = 0
-        return excess.flatten()
-
-    @staticmethod
-    def excess_coefficient_relative(x, axis=1):
-        # Get indices that sort the array along the specified axis
-        sorted_x = np.argsort(x, axis=axis)
-        # Get the largest and second largest values along the specified axis
-        largest_x = np.take_along_axis(x, sorted_x[:, -1:], axis=axis)
-        second_largest_x = np.take_along_axis(x, sorted_x[:, -2:-1], axis=axis)
-        # Calculate the excess
-        excess = 1 - second_largest_x / largest_x
-        # Set negative excess values to 0
-        # This is done to avoid negative excess values, which can occur if the second largest value is larger than the largest value
-        excess[excess < 0] = 0
-        return excess.flatten()
-
-    SCHEMES = {
-        "Gini Coefficient": gini_coefficient,
-        "Excess Coefficient (Absolute)": excess_coefficient_absolute,
-        "Excess Coefficient (Relative)": excess_coefficient_relative,
-    }
-    DEFAULT_SCHEME = "Excess Coefficient (Absolute)"
+CyclicGreen = ColorMap(pos=CYCLIC_POS, color=CYCLIC_COLORS)
 
 
 class DataFrameSource(QObject):
@@ -296,15 +220,8 @@ class BMUMap(QObject):
         """
         if len(self.unique_bmu_coordinates) > 0:
             self.padding = self.scaling_factor // 2
-            margin = self.padding + 0.5
-            self.bmu_map_coordinates = np.empty(
-                (len(self.unique_bmu_coordinates), 2), dtype=np.float16
-            )
-            self.bmu_map_coordinates[:, 0] = (
-                self.unique_bmu_coordinates[:, 0] * self.scaling_factor + margin
-            )
-            self.bmu_map_coordinates[:, 1] = (
-                self.unique_bmu_coordinates[:, 1] * self.scaling_factor + margin
+            self.bmu_map_coordinates = bmu_map_coordinates(
+                self.unique_bmu_coordinates, self.scaling_factor
             )
 
             self.map_bmu_coordinates_changed.emit(self.bmu_map_coordinates)
@@ -557,7 +474,9 @@ class BMUColors(QObject):
         if property_name not in self.bmu_compositions_continuous.keys():
             data = self.datamodel.get_values_for_column(property_name)
 
-            bmu_average = self.average_for_coordinate(data, bmu_id_for_datapoint)
+            bmu_average = RatioWeighting.average_for_coordinate(
+                data, bmu_id_for_datapoint
+            )
             # MinMax, so it is usable by colormap
             bmu_average, minimum, maximum = min_max(bmu_average)
             self.bmu_compositions_continuous[property_name] = BMUCompositionContinuous(
@@ -575,7 +494,7 @@ class BMUColors(QObject):
         self,
         property_name: str,
         category_to_color_mapping: dict,
-        scheme: str = RatioWeightingSchemes.DEFAULT_SCHEME,
+        scheme: str = RatioWeighting.DEFAULT_SCHEME,
     ):
 
         bmu_id_for_datapoint = self.bmu_data_map.index_to_unique_mapping
@@ -594,7 +513,7 @@ class BMUColors(QObject):
             num_bmus = len(self.bmu_data_map)
 
             # Calculate how many datapoint of each category fall onto every BMU
-            bmu_composition_ratio = self.ratio_for_coordinate(
+            bmu_composition_ratio = RatioWeighting.ratio_for_coordinate(
                 data, bmu_id_for_datapoint, category_bins, num_bmus
             )
 
@@ -602,7 +521,7 @@ class BMUColors(QObject):
             primary_catergory = np.argmax(bmu_composition_ratio, axis=1)
 
             # Calculate the alphas for the classes based on how much stronger the strongest category is than the others
-            alpha = RatioWeightingSchemes.SCHEMES[scheme](bmu_composition_ratio)
+            alpha = RatioWeighting.SCHEMES[scheme](bmu_composition_ratio)
             # Map alpha values to ints in the range [0, 255]
             alpha = np.clip((alpha * 255), 0, 255).astype(np.uint8)
 
@@ -614,7 +533,7 @@ class BMUColors(QObject):
             bmu_composition_ratio = self.bmu_compositions_categorical[
                 property_name
             ].category_ratio
-            alpha = RatioWeightingSchemes.SCHEMES[scheme](bmu_composition_ratio)
+            alpha = RatioWeighting.SCHEMES[scheme](bmu_composition_ratio)
             alpha = np.clip((alpha * 255), 0, 255).astype(np.uint8)
             self.bmu_compositions_categorical[property_name].alphas[scheme] = alpha
 
@@ -638,46 +557,3 @@ class BMUColors(QObject):
         brushes = [mkBrush(color) for color in unique_colors]
         self.current_colors = [brushes[i] for i in mapping]
         self.colors_updated.emit(self.current_colors)
-
-    @staticmethod
-    def average_for_coordinate(
-        values: Union[NDArray, Collection], coordinate_id: NDArray
-    ) -> NDArray:
-        # Use bincount with weights to calculate sums for each unique index
-        _values = np.asarray(values)
-        sums = np.bincount(coordinate_id, weights=_values)
-        # Use bincount to calculate counts for each unique index
-        counts = np.bincount(coordinate_id)
-
-        # Calculate average by dividing sums by counts
-        return np.divide(sums, counts, out=np.zeros_like(sums), where=counts != 0)
-
-    @staticmethod
-    def ratio_for_coordinate(
-        values: Union[NDArray, Collection],
-        bmu_id_for_datapoint: NDArray[np.uint32],
-        bins: list,
-        num_bmus: int,
-    ) -> NDArray[np.float16]:
-        # Initialize result array
-        num_bins = len(bins)
-        occurances = np.zeros((num_bmus, num_bins), dtype=np.uint16)
-        _values = np.asarray(values)
-
-        _, class_as_id = np.unique_inverse(_values)
-        class_as_id = np.astype(class_as_id, np.uint16)
-
-        # Process each bmu
-        occurances = create_bmu_composition(
-            bmu_id_for_datapoint, class_as_id, num_bmus, num_bins
-        )
-
-        counts = np.sum(occurances, axis=1)
-        ratios = np.divide(
-            occurances,
-            counts[:, np.newaxis],
-            out=np.zeros_like(occurances, dtype=np.float16),
-        )
-        ratios[np.isnan(ratios)] = 0
-
-        return ratios

@@ -2,21 +2,21 @@ from typing import Optional
 
 import numpy as np
 import pyqtgraph as pg
-import pyqtgraph.exporters
 import PySide6.QtWidgets as W
 from numpy.typing import NDArray
 from pandas import DataFrame
 from pyqtgraph.functions import mkPen
 from PySide6.QtCore import QObject, QSize, Qt, Signal, Slot
 from PySide6.QtGui import QKeySequence
-from scipy.interpolate import RegularGridInterpolator
 
+from chisom._core.render import interpolate_matrix
 from chisom._interface._types import ColumnProperties
-from chisom._interface.helpers import CyclicGreen, EarthColorMap
 from chisom._interface.models import (
     BMUColors,
     BMUMap,
     CommonDataModel,
+    CyclicGreen,
+    EarthColorMap,
     FilterModel,
 )
 from chisom.io.datastores import DatasetBase
@@ -52,8 +52,8 @@ class UMap(QObject):
         This is used to update the U-matrix.
         """
         self.selected_values = image[self.layer]
-        self.scaled_values = self._interpolate_matrix(
-            self.selected_values, self.scaling_factor
+        self.scaled_values = np.astype(
+            interpolate_matrix(self.selected_values, self.scaling_factor), np.float32
         )
         self.ImageItem.setImage(image=self.scaled_values, *args, **kwargs)
 
@@ -64,76 +64,10 @@ class UMap(QObject):
         This is used to update the U-matrix with a new scaling factor.
         """
         self.scaling_factor = scaling
-        self.scaled_values = self._interpolate_matrix(
+        self.scaled_values = interpolate_matrix(
             self.selected_values, self.scaling_factor
         )
         self.ImageItem.setImage(image=self.scaled_values)
-
-    @staticmethod
-    def _interpolate_matrix(
-        matrix: NDArray[np.float32], scaling: int
-    ) -> NDArray[np.float32]:
-        """
-        Interpolates a matrix by a given scaling factor.
-
-        Parameters
-        ----------
-        matrix : NDArray[np.float32]
-            matrix to interpolate
-        scaling : int
-            scaling factor
-
-        Returns
-        -------
-        NDArray[np.float32]
-            Interpolated umatrix
-        """
-        # Double the matrix to handle border interpolation
-        if scaling < 2:
-            return matrix
-
-        fourfold_matrix = np.tile(matrix, (2, 2))
-
-        # create places of known values on grid for interpolation
-        rows, cols = fourfold_matrix.shape
-        row_steps = np.linspace(0, rows * scaling, rows, dtype=int, endpoint=False)
-        col_steps = np.linspace(0, cols * scaling, cols, dtype=int, endpoint=False)
-
-        # create spline function for interpolation
-        interpolation_function = RegularGridInterpolator(
-            (row_steps, col_steps), fourfold_matrix
-        )
-
-        new_rows, new_cols = np.meshgrid(
-            range(row_steps.max() + 1),
-            range(col_steps.max() + 1),
-            indexing="ij",
-        )
-
-        # interpolate umatrix
-        interpolated_matrix = interpolation_function((new_rows, new_cols))
-
-        # cut interpolated umatrix to orginal projection area
-        interpolated_matrix_cut = interpolated_matrix[
-            : matrix.shape[0] * scaling, : matrix.shape[1] * scaling
-        ]
-
-        # shift interpolated umatrix to have the origins of the original points in the center of an interpolated area
-        padding = scaling // 2
-        original_rows, original_cols = matrix.shape
-        result = np.empty(
-            (original_rows * scaling, original_cols * scaling), dtype=np.float32
-        )
-        # upper left corner
-        result[:padding, :padding] = interpolated_matrix_cut[-padding:, -padding:]
-        # left edge
-        result[padding:, :padding] = interpolated_matrix_cut[:-padding, -padding:]
-        # top edge
-        result[:padding, padding:] = interpolated_matrix_cut[-padding:, :-padding]
-        # rest of map
-        result[padding:, padding:] = interpolated_matrix_cut[:-padding, :-padding]
-
-        return result
 
     @Slot(int)
     def set_layer(self, layer: int):
