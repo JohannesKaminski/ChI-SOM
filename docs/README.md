@@ -39,14 +39,13 @@ import numpy as np
 import pandas as pd
 
 from chisom import Som, start_chisom_viewer
-from chisom.utils import decay_linear, lattice_size
+from chisom.utils import lattice_size
 
 data = np.random.random((600, 400))
 
 # Set up with ESOM rules
 n_datapoints, n_features = data.shape
 rows, columns = lattice_size(n_datapoints)
-SIGMA = rows // 2
 
 # Create a SOM object
 # The high and low parameters should be chosen according to the dataset values
@@ -60,14 +59,8 @@ som = Som(
 
 N_EPOCHS = 30
 
-# The training loop
-for epoch in range(N_EPOCHS):
-    # Calculate the current sigma and alpha values using decay functions
-    current_sigma = decay_linear(epoch, SIGMA, total_iterations=N_EPOCHS)
-    current_alpha = decay_linear(epoch, 0.8, total_iterations=N_EPOCHS)
-
-    # Train one epoch
-    som.train(data, epoch, current_sigma, current_alpha)
+# Train the SOM for all epochs in a single call
+som.train(data, N_EPOCHS, 0.8)
 
 # Calculate the U-Matrix
 umx = som.get_umatrix()

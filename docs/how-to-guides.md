@@ -58,12 +58,11 @@ During initialization of the SOM, we can get the necessary data features from th
 The DataLoader is then passed to the _train_ method.
 ```python
 --8<-- "examples/basic_som.py:38:39"
---8<-- "examples/basic_som.py:44:44"
 ```  
 Should shuffling be used during training, a new instance of the _DataLoader_ must be created before prediction of BMUs and QE to keep the correct association between the datapoints indices and prediction.
 ```python
---8<-- "examples/basic_som.py:46:52"
---8<-- "examples/basic_som.py:58:59"
+--8<-- "examples/basic_som.py:41:47"
+--8<-- "examples/basic_som.py:53:54"
 ```  
 A full working example can be found in the [Examples]({{ config.repo_url.rstrip('/') }}/tree/main/examples)
 

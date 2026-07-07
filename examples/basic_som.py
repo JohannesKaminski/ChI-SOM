@@ -3,10 +3,11 @@ from torch.utils.data import DataLoader
 
 from chisom import Som, start_chisom_viewer
 from chisom.io import HDF5Dataset
-from chisom.utils import decay_exponential, decay_linear, lattice_size
+from chisom.utils import lattice_size
 
-EPOCHS = 30
+EPOCHS = 5
 ALPHA = 0.5
+BATCHSIZE = 100
 
 # Create a ChemDataset object that from a HDF5 file, that is compatible with the pytorch DataLoader
 ds = HDF5Dataset("tests/VDR.h5", ["active"])
@@ -14,13 +15,12 @@ ds = HDF5Dataset("tests/VDR.h5", ["active"])
 # Create a DataLoader object that will be used to train the SOM
 dl = DataLoader(
     ds,
-    batch_size=1000,
+    batch_size=BATCHSIZE,
     shuffle=True,
     num_workers=4,
 )
 
 rows, columns = lattice_size(len(ds))
-SIGMA = rows // 2
 
 # Create a SOM object
 # The high and low parameters should be chosen according to the dataset values, to decrease the training time
@@ -35,13 +35,8 @@ som = Som(
 )
 
 
-# The training loop
-for epoch in range(EPOCHS):
-    # Calculate the current sigma and alpha values using decay functions
-    current_sigma = decay_exponential(epoch, SIGMA, 1, total_iterations=EPOCHS)
-    current_alpha = decay_linear(epoch, ALPHA, total_iterations=EPOCHS)
-
-    som.train(dl, epoch, current_sigma, current_alpha)
+# Train the SOM for all epochs in a single call
+som.train(dl, EPOCHS, ALPHA, BATCHSIZE)
 
 # Create a DataLoader object for prediction (no shuffling)
 dl = DataLoader(

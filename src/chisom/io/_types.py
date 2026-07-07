@@ -1,5 +1,5 @@
-from collections.abc import Callable
-from typing import Protocol, Set, TypeVar, runtime_checkable
+from collections.abc import Callable, Iterator
+from typing import Optional, Protocol, Set, TypeVar, runtime_checkable
 
 import numpy as np
 import tables
@@ -29,10 +29,15 @@ class rdFingerprintGenerator:
 @runtime_checkable
 class DataLoader(Protocol):
     collate_fn: Callable
+    batch_size: Optional[int]
 
     def __init__(
         self, dataset, batch_size, shuffel, num_workers, collate_fn, pin_memory
     ): ...
+
+    def __len__(self) -> int: ...
+
+    def __iter__(self) -> Iterator[NDArray]: ...
 
 
 Timeout = TypeVar("Timeout", int, float)

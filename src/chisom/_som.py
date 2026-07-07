@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+from functools import partial
+from math import log
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 from numpy.typing import NDArray
+from tqdm import tqdm, trange
 
 from chisom._core.cpu import trainer as cpu_trainer
 from chisom._core.cpu.umatrix import make_umatrix_calculation
 from chisom._core.types import Codebook, UMatrix
+from chisom._core.utils import _decay_exponential, _decay_linear
 from chisom.io._types import DataLoader
 from chisom.io._utils import numpy_collate
 
@@ -148,7 +152,8 @@ class Som:
 
         # Initial setup of codebook
         self.dimensions = np.array((self.rows, self.columns), dtype=np.int32)
-        self.rng = np.random.default_rng(seed)
+        self.seed = seed
+        self.rng = np.random.default_rng(self.seed)
 
         codebook = self.rng.uniform(low, high, (self.rows, self.columns, self.features))
         codebook = np.asarray(codebook, dtype=np.float32, order="C")
@@ -175,59 +180,151 @@ class Som:
     def train(
         self,
         data: NDArray | DataLoader,
-        epoch: int,
-        sigma: float,
+        epochs: int,
         alpha: float,
-    ):
+        batchsize: int = 1,
+        shuffle: bool = True,
+        sigma: Optional[int] = None,
+        alpha_decay: str = "linear",
+        sigma_decay: str = "exponential",
+        alpha_end: float = 0.01,
+        sigma_end: int = 1,
+    ) -> None:
         """
-        Train the SOM with the given data for one epoch
+        Train the SOM with the given data for a number of epochs.
+
+        Runs the full training loop internally, including per-step decay of
+        ``alpha`` and ``sigma`` and (if ``save_progress`` was set on
+        initialization) periodic U-Matrix/codebook checkpointing once per
+        epoch. Progress is reported via tqdm progress bars for both the
+        epoch loop and the per-epoch batch loop.
 
         Parameters
         ----------
-        data : NDArray | DataLoader
-            The data to train the SOM with. If a DataLoader is used, it should be batched.
-            If a numpy array is used, it will be treated as a single batch.
-        epoch : int
-            The current epoch of the training.
-        sigma : float
-            The sigma value for the current epoch.
-            This is used to calculate the neighborhood radius.
-            Must be greater than 0.
-        alpha : float, optional
-            The learning rate for the current epoch.
+        data
+            The data to train the SOM with. If a DataLoader is used, it is
+            iterated batch by batch as configured on the DataLoader itself.
+            If a numpy array is used, it is split into batches of size
+            `batchsize`.
+        epochs
+            Number of epochs to train for.
+        alpha
+            The initial learning rate. Decays to `alpha_end` over the
+            course of training according to `alpha_decay`.
+        batchsize
+            Number of data points per batch. Only used when `data` is a
+            numpy array (ignored for DataLoader input, which defines its
+            own batching), by default 1.
+        shuffle
+            If True, the order of batches is reshuffled at the start of
+            each epoch. Only applies when `data` is a numpy array;
+            DataLoader shuffling is controlled by the DataLoader itself.
+            By default True.
+        sigma
+            The initial neighborhood radius. Must be greater than 0 if
+            given. Defaults to None, in which case it is set to half the
+            smaller of the map's row/column dimensions.
+        alpha_decay
+            The decay schedule for `alpha`, one of "linear" or
+            "exponential", by default "linear".
+        sigma_decay
+            The decay schedule for `sigma`, one of "linear" or
+            "exponential", by default "exponential".
+        alpha_end
+            The value `alpha` decays towards by the end of training, by
+            default 0.01.
+        sigma_end
+            The value `sigma` decays towards by the end of training, by
+            default 1.
 
         Raises
         ------
         ValueError
-            If sigma is less than or equal to 0.
+            If sigma is given and is less than or equal to 0.
+        ValueError
+            If `alpha_decay` or `sigma_decay` is not "linear" or
+            "exponential".
         """
 
-        if sigma <= 0:
+        if sigma is not None and sigma <= 0:
             raise ValueError("Sigma can not be zero or smaller")
 
-        # Transform the input data to adhere to batching and CPU training if necessary
-        data = self._transform_in_data(data)
+        if sigma is None:
+            sigma = min(self.rows, self.columns) // 2
 
-        # Use the update coefficients function to set the trainers parameter for the epoch, including factors for map distance
+        # Transform the input data to adhere to batching and CPU training if necessary
+        batches = self._transform_in_data(data, batchsize)
+        steps = epochs * len(batches)
+
+        if alpha_decay == "linear":
+            alpha_decay_func = partial(_decay_linear, init=alpha, decay=steps)
+        elif alpha_decay == "exponential":
+            alpha_decay_func = partial(
+                _decay_exponential, init=alpha, decay=steps / -log(alpha_end / alpha)
+            )
+        else:
+            raise ValueError(f"Unknown alpha decay: {alpha_decay}")
+
+        if sigma_decay == "linear":
+            sigma_decay_func = partial(_decay_linear, init=sigma, decay=steps)
+        elif sigma_decay == "exponential":
+            sigma_decay_func = partial(
+                _decay_exponential, init=sigma, decay=steps / -log(sigma_end / sigma)
+            )
+        else:
+            raise ValueError(f"Unknown sigma decay: {sigma_decay}")
+
+        step = 0
+        for epoch in trange(epochs, desc="Epoch: "):
+            if shuffle and isinstance(batches, list):
+                epoch_data = [batches[i] for i in self.rng.permutation(len(batches))]
+            else:
+                epoch_data = batches
+
+            for batch in tqdm(epoch_data, leave=False, desc="Batch: "):
+                # Use the update coefficients function to set the trainers parameter for the step, including factors for map distance
+                self.trainer_instance.update_coefficients(
+                    alpha=np.float32(alpha_decay_func(step)),
+                    sigma=np.float32(sigma_decay_func(step)),
+                )
+                self.trainer_instance.train(batch)
+                step += 1
+
+            # Save the umatrix and codebook if save_progress is set
+            if self.outpath is not None:
+                self.umatrix = np.concat(
+                    (
+                        self.umatrix,
+                        self.get_umatrix()[np.newaxis, :, :],
+                    ),
+                    axis=0,
+                )
+                np.save(self.outpath / "umatrix", self.umatrix)
+                np.save(self.outpath / "codebook", self.trainer_instance.codebook)
+
+    def train_batch(self, data: NDArray, sigma: int, alpha: float) -> None:
+        """
+        Manually train the SOM with a single batch of data.
+
+        Provides fine-grained control over training by allowing the caller
+        to set `alpha` and `sigma` explicitly for a single batch, bypassing
+        the automatic per-epoch decay scheduling used by `train`. Useful for
+        custom training loops or schedules not covered by `train`.
+
+        Parameters
+        ----------
+        data
+            A single batch of vectors to train the SOM on.
+        sigma
+            The neighborhood radius to use for this batch.
+        alpha
+            The learning rate to use for this batch.
+        """
         self.trainer_instance.update_coefficients(
             alpha=np.float32(alpha),
             sigma=np.float32(sigma),
-            epoch=np.int32(epoch),
         )
-        for batch in data:
-            self.trainer_instance.train(batch)
-
-        # Save the umatrix and codebook if save_progress is set
-        if self.outpath is not None:
-            self.umatrix = np.concat(
-                (
-                    self.umatrix,
-                    self.get_umatrix()[np.newaxis, :, :],
-                ),
-                axis=0,
-            )
-            np.save(self.outpath / "umatrix", self.umatrix)
-            np.save(self.outpath / "codebook", self.trainer_instance.codebook)
+        self.trainer_instance.train(data)
 
     @property
     def codebook(self) -> Codebook:
@@ -276,12 +373,15 @@ class Som:
             Error if the data format is not known
         """
 
-        data = self._transform_in_data(data)
-        if isinstance(data, DataLoader):
-            data.shuffle = False
+        batchsize = (
+            (data.batch_size or 1) if isinstance(data, DataLoader) else len(data)
+        )
+        batches = self._transform_in_data(data, batchsize)
+        if isinstance(batches, DataLoader):
+            batches.shuffle = False
 
         bmu_batches, qe_batches = [], []
-        for batch in data:
+        for batch in batches:
             bmu_batch, qe_batch = self.trainer_instance.predict(batch)
             bmu_batches.append(bmu_batch)
             qe_batches.append(qe_batch.flatten())
@@ -291,17 +391,17 @@ class Som:
         return bmu.astype(np.uint16), qe
 
     def _transform_in_data(
-        self, data: NDArray | DataLoader
-    ) -> NDArray[np.float32] | DataLoader:
-        # Ad new dimension if a numpy array is used as the input format,
-        # to conform to batched data iterating
-        if isinstance(data, np.ndarray):
-            data = np.astype(data[np.newaxis, :], np.float32)
-
+        self, data: NDArray | DataLoader, batchsize: int
+    ) -> List[NDArray[np.float32]] | DataLoader:
         # return_fp_from_dict is necessary to select to correct column from the Dataloader
         if isinstance(data, DataLoader):
             # Collate to numpy arrays if using CPU calculation
             if not self.use_cuda:
                 data.collate_fn = numpy_collate
+            return data
 
-        return data
+        # Split a numpy array input into a list of batches of size `batchsize`,
+        # to conform to batched data iterating
+        data = np.astype(data, np.float32)
+        n_batches = -(-len(data) // batchsize)  # ceil division
+        return np.array_split(data, n_batches)

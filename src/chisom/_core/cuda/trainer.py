@@ -278,8 +278,8 @@ class CudaTrainer(Trainer):
                 qe.append(self.codebook_vector_distance[argmin[0], argmin[1]])
         return (np.vstack(bmu), np.stack(qe))
 
-    def update_coefficients(self, alpha, sigma, epoch):
-        super().update_coefficients(alpha, sigma, epoch)
+    def update_coefficients(self, alpha, sigma):
+        super().update_coefficients(alpha, sigma)
         self.device_coefficients = cuda.to_device(
             self.computed_coefficients.astype(np.float32, order="F")
         )

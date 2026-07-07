@@ -95,7 +95,7 @@ wheels = [
 
 [[package]]
 name = "chi-som"
-version = "1.1.0.dev1"
+version = "1.1.0.dev2"
 source = { editable = "." }
 dependencies = [
     { name = "matplotlib", marker = "sys_platform == 'linux' or (extra == 'extra-7-chi-som-cu12' and extra == 'extra-7-chi-som-cu13')" },
