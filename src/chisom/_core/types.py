@@ -8,3 +8,5 @@ Vector: TypeAlias = Annotated[NDArray[np.float32], "float32[::1]"]
 Position: TypeAlias = Annotated[NDArray[np.int32], "int32[::1]"]
 MapValues: TypeAlias = Annotated[NDArray[np.float32], "float32[:, ::1]"]
 UMatrix: TypeAlias = Annotated[NDArray[np.float16], "float16[:, ::1]"]
+
+bmu_type = np.dtype([("row", np.uint16), ("column", np.uint16)])

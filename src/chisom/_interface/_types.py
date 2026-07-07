@@ -12,8 +12,6 @@ from typing import (
 import numpy as np
 from numpy.typing import NDArray
 
-bmu_type = np.dtype([("row", np.uint16), ("column", np.uint16)])
-
 
 class ColumnProperties(NamedTuple):
     dtype: Optional[np.dtype]

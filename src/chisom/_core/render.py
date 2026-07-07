@@ -168,7 +168,7 @@ def create_bmu_composition(
     return occurances
 
 
-def bmu_map_coordinates(
+def bmu_raw_to_map_coordinates(
     bmu_coordinates: NDArray[np.uint16],
     scaling_factor: int,
 ) -> NDArray[np.float16]:

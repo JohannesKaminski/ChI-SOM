@@ -18,9 +18,10 @@ from chisom._core.render import (
     EARTH_COLORS,
     EARTH_POS,
     RatioWeighting,
-    bmu_map_coordinates,
+    bmu_raw_to_map_coordinates,
     min_max,
 )
+from chisom._core.types import bmu_type
 from chisom.io.datastores import DatasetBase
 
 from ._types import (
@@ -29,7 +30,6 @@ from ._types import (
     ColorDataSource,
     ColumnProperties,
     TabularDatasource,
-    bmu_type,
 )
 
 EarthColorMap = ColorMap(pos=EARTH_POS, color=EARTH_COLORS)
@@ -220,7 +220,7 @@ class BMUMap(QObject):
         """
         if len(self.unique_bmu_coordinates) > 0:
             self.padding = self.scaling_factor // 2
-            self.bmu_map_coordinates = bmu_map_coordinates(
+            self.bmu_map_coordinates = bmu_raw_to_map_coordinates(
                 self.unique_bmu_coordinates, self.scaling_factor
             )
 
