@@ -259,11 +259,11 @@ class RatioWeighting:
         return excess.flatten()
 
     SCHEMES = {
-        "Gini Coefficient": gini_coefficient,
-        "Excess Coefficient (Absolute)": excess_coefficient_absolute,
-        "Excess Coefficient (Relative)": excess_coefficient_relative,
+        "gini": gini_coefficient,
+        "excess_absolute": excess_coefficient_absolute,
+        "excess_relative": excess_coefficient_relative,
     }
-    DEFAULT_SCHEME = "Excess Coefficient (Absolute)"
+    DEFAULT_SCHEME = "excess_absolute"
 
     @staticmethod
     def average_for_coordinate(
