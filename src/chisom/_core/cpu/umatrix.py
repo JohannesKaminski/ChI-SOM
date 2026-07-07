@@ -40,14 +40,14 @@ def make_umatrix_calculation(vector_dist_norm: str) -> Callable[[Codebook], UMat
 
         Returns
         -------
-        NDArray[np.float32]
+        NDArray[np.float16]
             2D array of shape (height, width) representing the U-Matrix,
             normalized to the range [0, 1].
         """
 
         # TODO: Add option for non-toroidal topology
         indeces = codebook.shape[:2]
-        umatrix = np.zeros(indeces, dtype=np.float16)
+        umatrix = np.zeros(indeces, dtype=np.float32)
 
         # Calculate distances to the top neighboring neurons by shifting the array
         north_matrix = np.concat((codebook[-1:, :, :], codebook[:-1, :, :]), axis=0)
@@ -72,6 +72,6 @@ def make_umatrix_calculation(vector_dist_norm: str) -> Callable[[Codebook], UMat
         u_max = np.max(umatrix)
         umatrix = (umatrix - u_min) / (u_max - u_min)
 
-        return umatrix
+        return np.astype(umatrix, np.float16)
 
     return caculate_umatrix
