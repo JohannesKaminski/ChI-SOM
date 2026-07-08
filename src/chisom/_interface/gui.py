@@ -6,7 +6,7 @@ import PySide6.QtWidgets as W
 from numpy.typing import NDArray
 from pandas import DataFrame
 from pyqtgraph.functions import mkPen
-from PySide6.QtCore import QObject, QSize, Qt, Signal, Slot
+from PySide6.QtCore import QObject, QPoint, QSize, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QKeySequence
 
 from chisom._core.render import interpolate_matrix
@@ -228,6 +228,146 @@ class CompoundTable(W.QTableView):
             self.copySel()
         else:
             super().keyPressEvent(ev)
+
+
+class MoleculeCard(W.QWidget):
+    """A single molecule's structure thumbnail and property list, used inside a BmuHoverPopup."""
+
+    THUMBNAIL_SIZE = (220, 165)
+
+    def __init__(
+        self,
+        smiles: Optional[str],
+        properties: list[tuple[str, str]],
+        parent=None,
+    ):
+        super().__init__(parent=parent)
+
+        layout = W.QHBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+
+        thumbnail_label = W.QLabel(self)
+        if smiles:
+            pixmap = CommonDataModel.create_CompoundImage(
+                smiles, size=self.THUMBNAIL_SIZE
+            )
+            thumbnail_label.setPixmap(pixmap)
+        else:
+            thumbnail_label.setFixedSize(*self.THUMBNAIL_SIZE)
+            thumbnail_label.setText("No structure")
+            thumbnail_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(thumbnail_label, 0)
+
+        props_layout = W.QVBoxLayout()
+        props_layout.setSpacing(2)
+        for name, value in properties:
+            label = W.QLabel(f"<b>{name}:</b> {value}")
+            label.setWordWrap(True)
+            props_layout.addWidget(label)
+        props_layout.addStretch()
+        layout.addLayout(props_layout, 1)
+
+
+class BmuHoverPopup(W.QWidget):
+    """
+    Floating, transient panel listing the molecules at a hovered BMU cell.
+
+    Stays open for as long as the source BMU point is hovered. Once the
+    cursor leaves that point, a short grace window gives the user a chance
+    to move onto the popup itself; if they don't (or if they do and then
+    leave the popup), it closes.
+    """
+
+    POPUP_WIDTH = 380
+    VISIBLE_ENTRIES = 2.5
+    # Must stay shorter than UpperView's hover-dwell time, so a popup for a
+    # point the cursor has left is gone by the time a new one could open.
+    LEAVE_GRACE_MS = 400
+
+    def __init__(self, parent=None):
+        super().__init__(parent=parent)
+        self.setWindowFlags(Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setFixedWidth(self.POPUP_WIDTH)
+
+        self.scroll_area = W.QScrollArea(self)
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.scroll_area.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self.scroll_area.setFrameShape(W.QFrame.Shape.StyledPanel)
+
+        self.content = W.QWidget()
+        self.content.setFixedWidth(self.POPUP_WIDTH - 4)
+        self.content_layout = W.QVBoxLayout(self.content)
+        self.content_layout.setSpacing(6)
+        self.content_layout.addStretch()
+        self.scroll_area.setWidget(self.content)
+
+        outer = W.QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(self.scroll_area)
+
+        self._cards: list[MoleculeCard] = []
+        self._grace_timer = QTimer(self)
+        self._grace_timer.setSingleShot(True)
+        self._grace_timer.timeout.connect(self._grace_expired)
+        self._mouse_is_over = False
+
+    def set_molecules(
+        self, molecule_rows: list[tuple[Optional[str], list[tuple[str, str]]]]
+    ):
+        while self.content_layout.count() > 1:
+            item = self.content_layout.takeAt(0)
+            widget = item.widget() if item is not None else None
+            if widget is not None:
+                widget.deleteLater()
+        self._cards = []
+        for smiles, properties in molecule_rows:
+            card = MoleculeCard(smiles, properties, parent=self.content)
+            self.content_layout.insertWidget(self.content_layout.count() - 1, card)
+            self._cards.append(card)
+
+    def show_near(self, global_pos: QPoint):
+        self.adjustSize()
+        self.resize(self.POPUP_WIDTH, self._visible_height())
+        self.move(global_pos.x() + 16, global_pos.y() + 16)
+        self.show()
+
+    def _visible_height(self) -> int:
+        content_height = self.content.sizeHint().height()
+        if not self._cards:
+            return content_height
+        card_height = self._cards[0].sizeHint().height() + self.content_layout.spacing()
+        return min(content_height, int(card_height * self.VISIBLE_ENTRIES))
+
+    def bmu_left(self):
+        """The cursor left the BMU point this popup was opened for."""
+        if not self._mouse_is_over:
+            self._grace_timer.start(self.LEAVE_GRACE_MS)
+
+    def bmu_still_hovered(self):
+        """The cursor is still on the BMU point this popup was opened for."""
+        self._grace_timer.stop()
+
+    def _grace_expired(self):
+        if not self._mouse_is_over:
+            self.close()
+
+    def enterEvent(self, event):
+        self._mouse_is_over = True
+        self._grace_timer.stop()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._mouse_is_over = False
+        self.close()
+        super().leaveEvent(event)
 
 
 class CatergoryPair(W.QWidget):
@@ -491,11 +631,14 @@ class UpperView(W.QWidget):
         bmu_map: BMUMap,
         bmu_colors: BMUColors,
         data_columns: dict[str, ColumnProperties],
+        base_model: CommonDataModel,
         parent=None,
     ):
         super().__init__(parent=parent)
 
         self.umap = umap
+        self.bmu_map = bmu_map
+        self.source_model = base_model
         self.bmu_pen = mkPen("k", width=1.5)
         self.bmus_points = pg.ScatterPlotItem(
             x=bmu_map.bmu_map_coordinates[:, 1],
@@ -504,9 +647,21 @@ class UpperView(W.QWidget):
             size=10,
             brush=bmu_colors.current_colors,
             pen=self.bmu_pen,
+            hoverable=True,
+            tip=None,  # disable pyqtgraph's own hover tooltip; we show our own popup
         )
 
         bmu_colors.colors_updated.connect(self.set_bmu_colors)
+
+        self._hover_popup: Optional[BmuHoverPopup] = None
+        self._popup_scatter_indices: Optional[frozenset[int]] = None
+        self._pending_scatter_indices: Optional[frozenset[int]] = None
+        self._hover_screen_pos: Optional[QPoint] = None
+        self._hover_dwell_timer = QTimer(self)
+        self._hover_dwell_timer.setSingleShot(True)
+        self._hover_dwell_timer.setInterval(1000)
+        self._hover_dwell_timer.timeout.connect(self._open_hover_popup)
+        self.bmus_points.sigHovered.connect(self.handle_bmu_hover)
 
         # Initialize ROI variables
         self.roi = Roi(
@@ -622,6 +777,92 @@ class UpperView(W.QWidget):
         if len(roi_coords) > 0:
             self.new_bmu_selection.emit(roi_coords)
 
+    def handle_bmu_hover(self, plot, points, ev):
+        if len(points) == 0:
+            self._hover_dwell_timer.stop()
+            self._pending_scatter_indices = None
+            if self._hover_popup is not None:
+                self._hover_popup.bmu_left()
+            return
+
+        # At low zoom levels multiple BMU dots can occupy the same screen
+        # pixels, so more than one point may be hovered at once.
+        scatter_indices = frozenset(point.index() for point in points)
+
+        if (
+            self._hover_popup is not None
+            and scatter_indices == self._popup_scatter_indices
+        ):
+            # Still hovering the point(s) the open popup belongs to: keep it open.
+            self._hover_popup.bmu_still_hovered()
+            self._hover_dwell_timer.stop()
+            self._pending_scatter_indices = scatter_indices
+            return
+
+        if scatter_indices == self._pending_scatter_indices:
+            return
+
+        if self._hover_popup is not None:
+            # Hovering different point(s) than the ones the open popup belongs to.
+            self._hover_popup.bmu_left()
+
+        self._pending_scatter_indices = scatter_indices
+        screen_pos = ev.screenPos()
+        self._hover_screen_pos = QPoint(int(screen_pos.x()), int(screen_pos.y()))
+        self._hover_dwell_timer.start()
+
+    def _open_hover_popup(self):
+        if not self._pending_scatter_indices or self._hover_screen_pos is None:
+            return
+
+        data_rows = np.concatenate(
+            [
+                self.bmu_map.get_dataset_rows_for_unique_index(scatter_index)
+                for scatter_index in self._pending_scatter_indices
+            ]
+        )
+        if len(data_rows) == 0:
+            return
+
+        molecule_rows = self._build_molecule_rows(data_rows)
+
+        if self._hover_popup is not None:
+            self._hover_popup.close()
+
+        self._popup_scatter_indices = self._pending_scatter_indices
+        self._hover_popup = BmuHoverPopup(parent=self.window())
+        self._hover_popup.destroyed.connect(self._clear_hover_popup_ref)
+        self._hover_popup.set_molecules(molecule_rows)
+        self._hover_popup.show_near(self._hover_screen_pos)
+
+    def _clear_hover_popup_ref(self, *_):
+        self._hover_popup = None
+        self._popup_scatter_indices = None
+
+    def _build_molecule_rows(
+        self, data_rows: np.ndarray
+    ) -> list[tuple[Optional[str], list[tuple[str, str]]]]:
+        model = self.source_model
+        smiles_col = model.structure_info_column_id
+
+        rows: list[tuple[Optional[str], list[tuple[str, str]]]] = []
+        for row in data_rows:
+            row = int(row)
+            smiles = (
+                model.data_source.get_value(row, smiles_col)
+                if smiles_col is not None
+                else None
+            )
+            properties = []
+            for col_idx, name in enumerate(model.columns):
+                data_col = model.column_back_map[col_idx]
+                if smiles_col is not None and data_col == smiles_col:
+                    continue  # excludes both the raw SMILES column and the "Structure" column
+                value = model.data_source.get_value(row, data_col)
+                properties.append((name, str(value)))
+            rows.append((smiles, properties))
+        return rows
+
 
 class SelectionView(W.QWidget):
     def __init__(self, data_model: FilterModel, parent=None):
@@ -642,6 +883,7 @@ class MainView(W.QSplitter):
         self,
         umap: UMap,
         data_model: FilterModel,
+        base_model: CommonDataModel,
         bmu_map: BMUMap,
         bmu_colors: BMUColors,
         parent=None,
@@ -658,6 +900,7 @@ class MainView(W.QSplitter):
             bmu_map=self.bmu_map,
             bmu_colors=bmu_colors,
             data_columns=data_model.columns_with_properties,
+            base_model=base_model,
             parent=self,
         )
         self.data_view = SelectionView(data_model=self.data_model, parent=self)
@@ -712,6 +955,7 @@ class MainSomWindow(W.QMainWindow):
         self.main_view = MainView(
             umap=self.umap,
             data_model=self.data_model,
+            base_model=self.base_model,
             bmu_map=self.bmu_map,
             bmu_colors=bmu_colors,
             parent=self,

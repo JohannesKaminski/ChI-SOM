@@ -213,6 +213,15 @@ class BMUMap(QObject):
         )
         return scatterplot_idx, data_idx
 
+    def get_dataset_rows_for_unique_index(self, scatter_index: int) -> NDArray:
+        """
+        Given the index of a point in `unique_bmu_coordinates` (matching the
+        index returned by a pyqtgraph SpotItem.index() for the BMU
+        scatterplot), return the dataset row indices of all samples mapped
+        to that BMU cell.
+        """
+        return np.argwhere(self.index_to_unique_mapping == scatter_index).flatten()
+
     def calculate_bmu_map_coordinates(self) -> None:
         """
         Returns the BMU coordinates in the map space.
@@ -367,10 +376,12 @@ class CommonDataModel(QtCore.QAbstractTableModel):
         return QtCore.Qt.ItemFlag.ItemIsEnabled | QtCore.Qt.ItemFlag.ItemIsSelectable
 
     @staticmethod
-    def create_CompoundImage(smiles: str) -> QPixmap:
+    def create_CompoundImage(
+        smiles: str, size: tuple[int, int] = (200, 150)
+    ) -> QPixmap:
         """Create a QPixmap from a SMILES string."""
         mol = Chem.MolFromSmiles(smiles)
-        img = rdDraw.MolToImage(mol, size=(200, 150))
+        img = rdDraw.MolToImage(mol, size=size)
         return QPixmap.fromImage(ImageQt.ImageQt(img))
 
 
