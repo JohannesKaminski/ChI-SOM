@@ -246,11 +246,17 @@ class Som:
             "exponential".
         """
 
-        if sigma is not None and sigma <= 0:
-            raise ValueError("Sigma can not be zero or smaller")
+        if sigma is not None and sigma <= sigma_end:
+            raise ValueError("Sigma can not be less than or equal to sigma_end")
 
         if sigma is None:
             sigma = min(self.rows, self.columns) // 2
+
+        if alpha is not None and alpha <= alpha_end:
+            raise ValueError("Alpha can not be less than or equal to alpha_end")
+
+        if alpha is None:
+            alpha = 0.1
 
         # Transform the input data to adhere to batching and CPU training if necessary
         batches = self._transform_in_data(data, batchsize)
