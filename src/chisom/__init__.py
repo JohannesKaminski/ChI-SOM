@@ -12,7 +12,13 @@ __all__ = [
 
 def __getattr__(name):
     if name == "start_chisom_viewer":
-        from ._interface.gui import start_chisom_viewer
+        try:
+            from ._interface.gui import start_chisom_viewer
+        except ImportError as exc:
+            raise ImportError(
+                "The interactive viewer rquiere the optional GUI dependencies. "
+                "Install them with `pip install chisom[gui]`"
+            ) from exc
 
         return start_chisom_viewer
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

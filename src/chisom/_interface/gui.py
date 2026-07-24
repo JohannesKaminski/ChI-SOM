@@ -1,3 +1,5 @@
+import os
+
 from typing import Optional
 
 import numpy as np
@@ -992,6 +994,17 @@ def start_chisom_viewer(
     scaling_factor
         Will scale the U-Matrix by this factor ands interpolation for an anti-aliased view, by default 3.
     """
+
+    if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        raise RuntimeError(
+            "The ChI-SOM viewer needs a graphical display, but none was found "
+            "(no $DISPLAY / $WAYLAND_DISPLAY). This happens on headless servers and "
+            "remote shells. Run the viewer on a machine with a display, or forward the "
+            "display over SSH with `ssh -X` (or `ssh -Y`). Keep in mind the latter comes "
+            "with a heavy performance penalty. We would advice to only train large SOM "
+            "remotly and perform analysis on a headful system. To train remotely and "
+            "non-interactively plot results, use the headless `plot_som` path instead."
+        )
 
     app = pg.mkQApp("ChI-SOM Viewer")
 

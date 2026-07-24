@@ -51,8 +51,6 @@ dependencies = [
     "tables>=3.10.2",
     "tqdm>=4.65",
     "scipy>=1.15.2",
-    "pyqtgraph>=0.13.7",
-    "pyside6>=6.10.0",
     "matplotlib>=3.10.8",
     "numpy>=2,<2.4",
 ]
@@ -88,6 +86,10 @@ cu12 = [
 cu13 = [
     "cuda-pathfinder>=1.4",
     "numba-cuda[cu13]>=0.20.0",
+]
+gui = [
+    "pyqtgraph>=0.13.7",
+    "pyside6>=6.10.0",
 ]
 
 [build-system]
