@@ -473,13 +473,12 @@ class BMUColors(QObject):
         self.bmu_compositions_continuous: dict[str, BMUCompositionContinuous] = {}
 
     @Slot(list)
-    def update_bmu_colors_gradient(self, property_info):
+    def update_bmu_colors_gradient(self, property_name, property_cmap):
 
         # If the BMU map is empty, there are no BMU coordinates to update
         if len(self.bmu_data_map) == 0:
             return
 
-        property_name, property_cmap = property_info
         bmu_id_for_datapoint = self.bmu_data_map.index_to_unique_mapping
 
         if property_name not in self.bmu_compositions_continuous.keys():
