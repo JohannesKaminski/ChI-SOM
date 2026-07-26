@@ -99,11 +99,10 @@ version = "1.1.0.dev2"
 source = { editable = "." }
 dependencies = [
     { name = "matplotlib", marker = "sys_platform == 'linux' or (extra == 'extra-7-chi-som-cu12' and extra == 'extra-7-chi-som-cu13')" },
+    { name = "networkx", marker = "sys_platform == 'linux' or (extra == 'extra-7-chi-som-cu12' and extra == 'extra-7-chi-som-cu13')" },
     { name = "numba", marker = "sys_platform == 'linux' or (extra == 'extra-7-chi-som-cu12' and extra == 'extra-7-chi-som-cu13')" },
     { name = "numpy", marker = "sys_platform == 'linux' or (extra == 'extra-7-chi-som-cu12' and extra == 'extra-7-chi-som-cu13')" },
     { name = "pandas", marker = "sys_platform == 'linux' or (extra == 'extra-7-chi-som-cu12' and extra == 'extra-7-chi-som-cu13')" },
-    { name = "pyqtgraph", marker = "sys_platform == 'linux' or (extra == 'extra-7-chi-som-cu12' and extra == 'extra-7-chi-som-cu13')" },
-    { name = "pyside6", marker = "sys_platform == 'linux' or (extra == 'extra-7-chi-som-cu12' and extra == 'extra-7-chi-som-cu13')" },
     { name = "rdkit", marker = "sys_platform == 'linux' or (extra == 'extra-7-chi-som-cu12' and extra == 'extra-7-chi-som-cu13')" },
     { name = "scipy", marker = "sys_platform == 'linux' or (extra == 'extra-7-chi-som-cu12' and extra == 'extra-7-chi-som-cu13')" },
     { name = "tables", marker = "sys_platform == 'linux' or (extra == 'extra-7-chi-som-cu12' and extra == 'extra-7-chi-som-cu13')" },
@@ -118,6 +117,10 @@ cu12 = [
 cu13 = [
     { name = "cuda-pathfinder", marker = "sys_platform == 'linux'" },
     { name = "numba-cuda", extra = ["cu13"], marker = "(sys_platform == 'linux' and extra == 'extra-7-chi-som-cu13') or (extra == 'extra-7-chi-som-cu12' and extra == 'extra-7-chi-som-cu13')" },
+]
+gui = [
+    { name = "pyqtgraph", marker = "sys_platform == 'linux' or (extra == 'extra-7-chi-som-cu12' and extra == 'extra-7-chi-som-cu13')" },
+    { name = "pyside6", marker = "sys_platform == 'linux' or (extra == 'extra-7-chi-som-cu12' and extra == 'extra-7-chi-som-cu13')" },
 ]
 
 [package.dev-dependencies]
@@ -141,19 +144,20 @@ requires-dist = [
     { name = "cuda-pathfinder", marker = "extra == 'cu12'", specifier = ">=1.4", index = "https://pypi.org/simple" },
     { name = "cuda-pathfinder", marker = "extra == 'cu13'", specifier = ">=1.4", index = "https://pypi.org/simple" },
     { name = "matplotlib", specifier = ">=3.10.8" },
+    { name = "networkx", specifier = ">=3.6.1" },
     { name = "numba", specifier = ">=0.61.2" },
     { name = "numba-cuda", extras = ["cu12"], marker = "extra == 'cu12'", specifier = ">=0.20.0" },
     { name = "numba-cuda", extras = ["cu13"], marker = "extra == 'cu13'", specifier = ">=0.20.0" },
     { name = "numpy", specifier = ">=2,<2.4" },
     { name = "pandas", specifier = ">=2.2.3" },
-    { name = "pyqtgraph", specifier = ">=0.13.7" },
-    { name = "pyside6", specifier = ">=6.10.0" },
+    { name = "pyqtgraph", marker = "extra == 'gui'", specifier = ">=0.13.7" },
+    { name = "pyside6", marker = "extra == 'gui'", specifier = ">=6.10.0" },
     { name = "rdkit", specifier = ">=2024.9.6" },
     { name = "scipy", specifier = ">=1.15.2" },
     { name = "tables", specifier = ">=3.10.2" },
     { name = "tqdm", specifier = ">=4.65" },
 ]
-provides-extras = ["cu12", "cu13"]
+provides-extras = ["cu12", "cu13", "gui"]
 
 [package.metadata.requires-dev]
 dev = [

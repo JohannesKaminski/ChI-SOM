@@ -47,7 +47,7 @@ dl = DataLoader(
 )
 
 # Calculate the U-map for the current state of the notebook
-umx = som.get_umatrix()
+umx = som.umatrix
 np.save("tests/umx.npy", umx)
 
 # Predict the best matching units and quantization errors for all data points

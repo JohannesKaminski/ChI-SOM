@@ -6,12 +6,15 @@ from math import log
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+import networkx as nx
 import numpy as np
 from numpy.typing import NDArray
 from tqdm import tqdm, trange
 
 from chisom._core.cpu import trainer as cpu_trainer
-from chisom._core.cpu.umatrix import make_umatrix_calculation
+from chisom._core.cpu.distance import make_universal_distance_func
+from chisom._core.cpu.umatrix import compute_neighbor_distances, umatrix_from_neighbor_distances, NeighborDistances
+from chisom._core.graph import u_graph_from_neighbor_distances
 from chisom._core.types import Codebook, UMatrix
 from chisom._core.utils import _decay_exponential, _decay_linear
 from chisom.io._types import DataLoader
@@ -175,7 +178,11 @@ class Som:
             self.fastmath,
         )
 
-        self.umatrix: UMatrix
+        self._vector_dist_func = make_universal_distance_func(self.vector_distance_norm)
+        self._neighbor_distances: NeighborDistances | None = None
+        self._umatrix: NDArray[np.float16] | None = None
+        self._u_graph: nx.Graph | None = None
+
 
     def train(
         self,
@@ -280,6 +287,13 @@ class Som:
         else:
             raise ValueError(f"Unknown sigma decay: {sigma_decay}")
 
+        # A fresh training run rebuild the U-Matrix history and invaliates
+        # the cached U-Matrix and graph.
+        self._neighbor_distances = None
+        self._umatrix = None
+        self._u_graph = None
+
+
         step = 0
         for epoch in trange(epochs, desc="Epoch: "):
             if shuffle and isinstance(batches, list):
@@ -295,18 +309,25 @@ class Som:
                 )
                 self.trainer_instance.train(batch)
                 step += 1
+            self._neighbor_distances = None
 
-            # Save the umatrix and codebook if save_progress is set
+            # Append this epochs's U-Matrix layer and checkpoint to disk
             if self.outpath is not None:
-                self.umatrix = np.concat(
-                    (
-                        self.umatrix,
-                        self.get_umatrix()[np.newaxis, :, :],
-                    ),
-                    axis=0,
-                )
-                np.save(self.outpath / "umatrix", self.umatrix)
+                layer = self._compute_umatrix_layer()[np.newaxis, ...]
+                if self._umatrix is None:
+                    self._umatrix = layer
+                else:
+                    self._umatrix = np.concat(
+                        (
+                            self._umatrix,
+                            layer
+                        ),
+                        axis=0,
+                    )
                 np.save(self.outpath / "codebook", self.trainer_instance.codebook)
+
+        if self._umatrix is None:
+            self._umatrix = self._compute_umatrix_layer()[np.newaxis, ...]
 
     def train_batch(self, data: NDArray, sigma: int, alpha: float) -> None:
         """
@@ -331,6 +352,19 @@ class Som:
             sigma=np.float32(sigma),
         )
         self.trainer_instance.train(data)
+        self._umatrix = None
+        self._u_graph = None
+        self._neighbor_distances = None
+
+    def _get_neighbor_distances(self) -> NeighborDistances:
+        if self._neighbor_distances is None:
+            self._neighbor_distances = compute_neighbor_distances(
+                self.codebook, self._vector_dist_func
+            )
+        return self._neighbor_distances
+
+    def _compute_umatrix_layer(self) -> UMatrix:
+        return umatrix_from_neighbor_distances(self._get_neighbor_distances())
 
     @property
     def codebook(self) -> Codebook:
@@ -339,21 +373,60 @@ class Som:
     @codebook.setter
     def codebook(self, codebook: Codebook) -> None:
         self.trainer_instance.codebook = codebook
+        self._umatrix = None
+        self._u_graph = None
+        self._neighbor_distances = None
 
     def get_umatrix(self) -> UMatrix:
+        if self._umatrix is None:
+            self._umatrix = self._compute_umatrix_layer()[np.newaxis, ...]
+        raise DeprecationWarning("som.get_umatrix() is deprecated; use som.umatrix instead")
+        return self._umatrix
+
+    @property
+    def umatrix(self) -> UMatrix:
         """
-        Calculate the UMatrix for the current codebook
+        The U-Matrix for the SOM, as a 3D array of shape
+        (n_layers, rows, columns).
+
+        Computed and cached after training. When ``save_progress`` is set,
+        one layer is stored per epoch (training history); otherwise a single
+        final layer is stored. Accessing this before training computes a
+        single layer from the current (untrained) codebook on demand.
 
         Returns
         -------
-        UMatrix
-            The UMatrix for the current codebook.
+        NDArray[np.float16]
+            The U-Matrix, shape (n_layers, rows, columns).
         """
-        # TODO move to trainer factory, support more distances
-        umatrix_func = make_umatrix_calculation(self.vector_distance_norm)
-        umatrix = umatrix_func(self.codebook)
+        if self._umatrix is None:
+            self._umatrix = self._compute_umatrix_layer()[np.newaxis, ...]
 
-        return umatrix
+        return self._umatrix
+
+    @property
+    def u_graph(self) -> nx.Graph:
+        """
+        The U-Distance graph for the current codebook.
+
+        Undirected, edge-weighted networkx graph whose nodes
+        are grid positions (row, column) and whose edges connect toroidal
+        grid neighbors, weighted by the high-dimensional distance between
+        the corresponding codebook vectors, the same per-neighbor
+        distances used to build the U-Matrix. Build the graph once and
+        reuse it for repeated `chisom.analysis.u_distance` (or future
+        ranking) queries rather than calling this method repeatedly.
+
+        Returns
+        -------
+        nx.Graph
+            The U-Distance graph for the current codebook.
+        """
+        if self._u_graph is None:
+            self._u_graph = u_graph_from_neighbor_distances(
+                self._get_neighbor_distances(), self.rows, self.columns
+            )
+        return self._u_graph
 
     def predict(
         self, data: NDArray | DataLoader

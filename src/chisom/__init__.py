@@ -1,11 +1,13 @@
 from importlib.metadata import version
 
 from ._som import Som
+from .analysis import u_distance
 from .io.plotting import plot_som
 
 __all__ = [
     "Som",
     "plot_som",
+    "u_distance",
     "start_chisom_viewer",
 ]
 
