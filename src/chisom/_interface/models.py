@@ -88,7 +88,7 @@ class DataFrameSource(QObject):
         self.set_categorical(data, column_name)
 
     def set_categorical(self, data: NDArray, column_name: str) -> None:
-        data_type = np.dtype(data)
+        data_type = data.dtype
 
         try:
             unique = np.unique(data)
@@ -472,6 +472,30 @@ class BMUColors(QObject):
         self.bmu_compositions_categorical: dict[str, BMUCompositionCategorical] = {}
         self.bmu_compositions_continuous: dict[str, BMUCompositionContinuous] = {}
 
+        # Datapoints excluded by the active filter are excluded from color aggregation too
+        self._datapoint_filter_mask: Optional[NDArray] = None
+        self._active_continuous: Optional[tuple] = None
+        self._active_categorical: Optional[tuple] = None
+
+    @Slot(np.ndarray)
+    def set_datapoint_filter_mask(self, mask: NDArray) -> None:
+        self._datapoint_filter_mask = mask
+        # Cached compositions were aggregated under the old filter state; drop them
+        self.bmu_compositions_continuous.clear()
+        self.bmu_compositions_categorical.clear()
+
+        # Re-apply whichever coloring is currently active so the display reflects the new filter immediately
+        if self._active_continuous is not None:
+            self.update_bmu_colors_gradient(*self._active_continuous)
+        elif self._active_categorical is not None:
+            self.update_bmu_colors_categorical(*self._active_categorical)
+
+    def _filtered_bmu_ids(self, bmu_id_for_datapoint: NDArray, data: NDArray):
+        if self._datapoint_filter_mask is None:
+            return bmu_id_for_datapoint, data
+        keep = self._datapoint_filter_mask
+        return bmu_id_for_datapoint[keep], data[keep]
+
     @Slot(list)
     def update_bmu_colors_gradient(self, property_name, property_cmap):
 
@@ -479,16 +503,24 @@ class BMUColors(QObject):
         if len(self.bmu_data_map) == 0:
             return
 
+        self._active_continuous = (property_name, property_cmap)
+        self._active_categorical = None
+
         bmu_id_for_datapoint = self.bmu_data_map.index_to_unique_mapping
 
         if property_name not in self.bmu_compositions_continuous.keys():
-            data = self.datamodel.get_values_for_column(property_name)
+            data = np.asarray(self.datamodel.get_values_for_column(property_name))
+            num_bmus = len(self.bmu_data_map)
+            bmu_ids, data = self._filtered_bmu_ids(bmu_id_for_datapoint, data)
 
             bmu_average = RatioWeighting.average_for_coordinate(
-                data, bmu_id_for_datapoint
+                data, bmu_ids, minlength=num_bmus
             )
+            # BMUs with no (filter-passing) datapoints have no real average; exclude
+            # them from the min/max range so they don't skew the color scale of the rest
+            has_data = np.bincount(bmu_ids, minlength=num_bmus) > 0
             # MinMax, so it is usable by colormap
-            bmu_average, minimum, maximum = min_max(bmu_average)
+            bmu_average, minimum, maximum = min_max(bmu_average, mask=has_data)
             self.bmu_compositions_continuous[property_name] = BMUCompositionContinuous(
                 bmu_average, minimum, maximum
             )
@@ -499,13 +531,16 @@ class BMUColors(QObject):
         self.cmap_updated.emit([property_cmap, minimum, maximum, property_name])
         self.recolor_bmus(colors)
 
-    @Slot(str, list, str)
+    @Slot(str, dict, str)
     def update_bmu_colors_categorical(
         self,
         property_name: str,
         category_to_color_mapping: dict,
         scheme: str = RatioWeighting.DEFAULT_SCHEME,
     ):
+
+        self._active_categorical = (property_name, category_to_color_mapping, scheme)
+        self._active_continuous = None
 
         bmu_id_for_datapoint = self.bmu_data_map.index_to_unique_mapping
 
@@ -518,13 +553,14 @@ class BMUColors(QObject):
         category_colors = np.asarray(category_colors, dtype=np.uint8)
 
         if property_name not in self.bmu_compositions_categorical.keys():
-            data = self.datamodel.get_values_for_column(property_name)
+            data = np.asarray(self.datamodel.get_values_for_column(property_name))
 
             num_bmus = len(self.bmu_data_map)
+            bmu_ids, data = self._filtered_bmu_ids(bmu_id_for_datapoint, data)
 
             # Calculate how many datapoint of each category fall onto every BMU
             bmu_composition_ratio = RatioWeighting.ratio_for_coordinate(
-                data, bmu_id_for_datapoint, category_bins, num_bmus
+                data, bmu_ids, category_bins, num_bmus
             )
 
             # Select the most common category for each coordinate to determine primary color
@@ -567,3 +603,41 @@ class BMUColors(QObject):
         brushes = [mkBrush(color) for color in unique_colors]
         self.current_colors = [brushes[i] for i in mapping]
         self.colors_updated.emit(self.current_colors)
+
+
+class BMUFilter(QObject):
+    """
+    Computes a per-datapoint boolean "passes the active filter" mask.
+    Consumers (BMU visibility, ROI selection, BMU coloring) derive whatever
+    per-BMU or per-datapoint view they need from this single mask.
+    """
+
+    datapoint_mask_updated = Signal(np.ndarray)
+
+    def __init__(self, datamodel: ColorDataSource, bmu_data_map: BMUMap):
+        super().__init__()
+        self.datamodel = datamodel
+        self.bmu_data_map = bmu_data_map
+
+    @Slot(str, float, float)
+    def update_filter_continuous(self, property_name: str, minimum: float, maximum: float):
+        if len(self.bmu_data_map) == 0:
+            return
+
+        data = np.asarray(self.datamodel.get_values_for_column(property_name))
+        in_range = (data >= minimum) & (data <= maximum)
+        self.datapoint_mask_updated.emit(in_range)
+
+    @Slot(str, set)
+    def update_filter_categorical(self, property_name: str, selected_categories: set):
+        if len(self.bmu_data_map) == 0:
+            return
+
+        data = np.asarray(self.datamodel.get_values_for_column(property_name))
+        in_selected = np.isin(data, list(selected_categories))
+        self.datapoint_mask_updated.emit(in_selected)
+
+    @Slot()
+    def clear_filter(self):
+        num_datapoints = len(self.bmu_data_map.index_to_unique_mapping)
+        self.datapoint_mask_updated.emit(np.ones(num_datapoints, dtype=bool))

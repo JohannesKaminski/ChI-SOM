@@ -1,4 +1,4 @@
-from typing import Collection, Union
+from typing import Collection, Optional, Union
 
 import numpy as np
 from numba import jit, prange
@@ -67,9 +67,17 @@ EARTH_POS = create_stops(13)
 CYCLIC_POS = [0, 0.5, 1]
 
 
-def min_max(array: NDArray) -> tuple[NDArray, float, float]:
-    minimum = np.min(array)
-    maximum = np.max(array)
+def min_max(
+    array: NDArray, mask: Optional[NDArray] = None
+) -> tuple[NDArray, float, float]:
+    """
+    Normalizes `array` to [0, 1]. If `mask` is given, the min/max range is
+    computed only over the masked-in entries (e.g. to avoid unreached values
+    skewing the range for the entries that are actually used).
+    """
+    reference = array if mask is None else array[mask]
+    minimum = np.min(reference)
+    maximum = np.max(reference)
 
     return (array - minimum) / (maximum - minimum), minimum, maximum
 
@@ -267,13 +275,15 @@ class RatioWeighting:
 
     @staticmethod
     def average_for_coordinate(
-        values: Union[NDArray, Collection], coordinate_id: NDArray
+        values: Union[NDArray, Collection],
+        coordinate_id: NDArray,
+        minlength: Optional[int] = None,
     ) -> NDArray:
         # Use bincount with weights to calculate sums for each unique index
         _values = np.asarray(values)
-        sums = np.bincount(coordinate_id, weights=_values)
+        sums = np.bincount(coordinate_id, weights=_values, minlength=minlength or 0)
         # Use bincount to calculate counts for each unique index
-        counts = np.bincount(coordinate_id)
+        counts = np.bincount(coordinate_id, minlength=minlength or 0)
 
         # Calculate average by dividing sums by counts
         return np.divide(sums, counts, out=np.zeros_like(sums), where=counts != 0)
@@ -303,7 +313,7 @@ class RatioWeighting:
             occurances,
             counts[:, np.newaxis],
             out=np.zeros_like(occurances, dtype=np.float16),
+            where=counts[:, np.newaxis] != 0,
         )
-        ratios[np.isnan(ratios)] = 0
 
         return ratios

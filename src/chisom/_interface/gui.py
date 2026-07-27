@@ -15,6 +15,7 @@ from chisom._core.render import interpolate_matrix
 from chisom._interface._types import ColumnProperties
 from chisom._interface.models import (
     BMUColors,
+    BMUFilter,
     BMUMap,
     CommonDataModel,
     CyclicGreen,
@@ -453,6 +454,96 @@ class ColorCategoryWidget(W.QGroupBox):
         self.category_to_color_mapping_set.emit(catergory_to_color_mapping)
 
 
+class CategoryFilterPair(W.QWidget):
+    """
+    Stores the association between a column's category and its checkbox
+    """
+
+    def __init__(self, text):
+        super().__init__()
+        self.main_layout = W.QHBoxLayout()
+        self.category = text
+        self.label = W.QLabel(text)
+        self.checkbox = W.QCheckBox()
+        self.checkbox.setChecked(True)
+        self.main_layout.addWidget(self.label)
+        self.main_layout.addWidget(self.checkbox)
+        self.setLayout(self.main_layout)
+
+
+class FilterCategoryWidget(W.QGroupBox):
+    category_filter_set = Signal(set)
+
+    def __init__(self, data_columns: dict[str, ColumnProperties], parent=None):
+        super().__init__(parent=parent)
+
+        self.currently_selected = None
+        self.data_columns = data_columns  # Available columns to filter by
+        self.know_columns = {}
+        self.category_list = W.QVBoxLayout()
+        self.emit_button = W.QPushButton("Apply Filter")
+        self.setLayout(self.category_list)
+        self.emit_button.pressed.connect(self._property_set)
+
+    @Slot(str)
+    def select_property(self, name: str):
+        """
+        Called when a new column to filter by is selected and it is categorical
+        """
+        self.currently_selected = name
+        # If this column has been selected previously, use those checkboxes
+        if name in self.know_columns:
+            self.update_selection(self.know_columns[name])
+        # else, create a list of the column's available categories and a checkbox instance
+        elif name in self.data_columns:
+            checkbox_list = []
+            for category in self.data_columns[name].value_range:
+                pair = CategoryFilterPair(category)
+                checkbox_list.append(pair)
+            self.know_columns[name] = (
+                checkbox_list  # Store for later to keep checkbox instances available
+            )
+            self.update_selection(self.know_columns[name])
+        else:
+            raise ValueError("Selected Property unknown")
+
+    def update_selection(self, checkbox_list):
+        # Update the currently visible selection in the layout
+
+        # first, remove everything
+        while not self.category_list.isEmpty():
+            item = self.category_list.itemAt(0)
+            if item is not None:
+                widget = item.widget()
+                if widget is not None:
+                    self.category_list.removeWidget(widget)
+                    # only set invisible, as it is the same object as in self.know_columns
+                    widget.setVisible(False)
+
+        # rebuild layout from list
+        for item in checkbox_list:
+            item.setVisible(True)
+            self.category_list.addWidget(item)
+        # add button at the end
+        self.category_list.addWidget(self.emit_button)
+        self.emit_button.setVisible(True)
+
+    def reset_selection(self):
+        # Re-check every category for every known column, restoring the "no filter" state
+        for checkbox_list in self.know_columns.values():
+            for pair in checkbox_list:
+                pair.checkbox.setChecked(True)
+
+    @Slot(bool)
+    def _property_set(self):
+        selected_categories = {
+            widget.category
+            for widget in self.know_columns[self.currently_selected]
+            if widget.checkbox.isChecked()
+        }
+        self.category_filter_set.emit(selected_categories)
+
+
 class ControlWidget(W.QGroupBox):
     colormap_changed = Signal(str)
     colorbar_visible = Signal(bool)
@@ -460,6 +551,9 @@ class ControlWidget(W.QGroupBox):
     bmus_resized = Signal(int)
     continuous_color_selected = Signal(str, object)
     categorical_color_selected = Signal(str, dict)
+    continuous_filter_selected = Signal(str, float, float)
+    categorical_filter_selected = Signal(str, set)
+    filter_cleared = Signal()
 
     def __init__(
         self,
@@ -525,6 +619,45 @@ class ControlWidget(W.QGroupBox):
         )
         self.continuous_color.textActivated.connect(self.color_selected_continuous)
 
+        self.main_layout.addWidget(W.QFrame(frameShape=W.QFrame.Shape.HLine))
+
+        # Filter control
+        filter_layout = W.QGridLayout()
+        self.filter_by_label = W.QLabel("Filter by:")
+        self.filter_by_selector = W.QComboBox()
+        self.filter_by_selector.setEditable(False)
+        self.filter_by_selector.addItems(list(data_columns.keys()))
+        self.filter_by_selector.textActivated.connect(self.select_filter_property)
+        filter_layout.addWidget(self.filter_by_label, 0, 0)
+        filter_layout.addWidget(self.filter_by_selector, 0, 1)
+        self.main_layout.addLayout(filter_layout)
+
+        self.filter_category = FilterCategoryWidget(data_columns)
+        self.filter_category.setVisible(False)
+        self.main_layout.addWidget(self.filter_category)
+
+        self.filter_continuous = W.QWidget()
+        filter_continuous_layout = W.QGridLayout(self.filter_continuous)
+        self.filter_min_label = W.QLabel("Min:")
+        self.filter_min_spin = W.QDoubleSpinBox()
+        self.filter_max_label = W.QLabel("Max:")
+        self.filter_max_spin = W.QDoubleSpinBox()
+        self.filter_apply_button = W.QPushButton("Apply Filter")
+        self.filter_apply_button.pressed.connect(self.emit_continuous_filter)
+        filter_continuous_layout.addWidget(self.filter_min_label, 0, 0)
+        filter_continuous_layout.addWidget(self.filter_min_spin, 0, 1)
+        filter_continuous_layout.addWidget(self.filter_max_label, 1, 0)
+        filter_continuous_layout.addWidget(self.filter_max_spin, 1, 1)
+        filter_continuous_layout.addWidget(self.filter_apply_button, 2, 0, 1, 2)
+        self.filter_continuous.setVisible(False)
+        self.main_layout.addWidget(self.filter_continuous)
+
+        self.filter_clear_button = W.QPushButton("Clear Filter")
+        self.filter_clear_button.pressed.connect(self.clear_filter)
+        self.main_layout.addWidget(self.filter_clear_button)
+
+        self.filter_category.category_filter_set.connect(self.emit_categorical_filter)
+
         self.main_layout.addStretch()
 
         self.setLayout(self.main_layout)
@@ -557,6 +690,47 @@ class ControlWidget(W.QGroupBox):
         else:
             self.category_color.setVisible(False)
             self.continuous_color.setVisible(False)
+
+    @Slot(str)
+    def select_filter_property(self, name):
+        value_type = self.data_columns[name].value_type
+        if value_type == "categorical":
+            self.filter_continuous.setVisible(False)
+            self.filter_category.select_property(name)
+            self.filter_category.setVisible(True)
+        elif value_type == "continuous":
+            self.filter_category.setVisible(False)
+            minimum, maximum = self.data_columns[name].value_range
+            self.filter_min_spin.setRange(minimum, maximum)
+            self.filter_max_spin.setRange(minimum, maximum)
+            self.filter_min_spin.setValue(minimum)
+            self.filter_max_spin.setValue(maximum)
+            self.filter_continuous.setVisible(True)
+        else:
+            self.filter_category.setVisible(False)
+            self.filter_continuous.setVisible(False)
+
+    @Slot()
+    def emit_continuous_filter(self):
+        current_property = self.filter_by_selector.currentText()
+        self.continuous_filter_selected.emit(
+            current_property, self.filter_min_spin.value(), self.filter_max_spin.value()
+        )
+
+    @Slot(set)
+    def emit_categorical_filter(self, categories: set):
+        current_property = self.filter_by_selector.currentText()
+        self.categorical_filter_selected.emit(current_property, categories)
+
+    @Slot()
+    def clear_filter(self):
+        self.filter_category.reset_selection()
+        name = self.filter_by_selector.currentText()
+        if name and self.data_columns[name].value_type == "continuous":
+            minimum, maximum = self.data_columns[name].value_range
+            self.filter_min_spin.setValue(minimum)
+            self.filter_max_spin.setValue(maximum)
+        self.filter_cleared.emit()
 
     @Slot(int, int)
     def set_bmu_state(self, bmu_state: Qt.CheckState, bmu_size: int):
@@ -632,6 +806,7 @@ class UpperView(W.QWidget):
         umap: UMap,
         bmu_map: BMUMap,
         bmu_colors: BMUColors,
+        bmu_filter: BMUFilter,
         data_columns: dict[str, ColumnProperties],
         base_model: CommonDataModel,
         parent=None,
@@ -640,8 +815,12 @@ class UpperView(W.QWidget):
 
         self.umap = umap
         self.bmu_map = bmu_map
+        self.bmu_filter = bmu_filter  # keep alive: only referenced via signal connections otherwise
         self.source_model = base_model
         self.bmu_pen = mkPen("k", width=1.5)
+        self._master_visible: bool = True
+        # None means "no filter active" (every datapoint passes)
+        self._datapoint_filter_mask: Optional[NDArray] = None
         self.bmus_points = pg.ScatterPlotItem(
             x=bmu_map.bmu_map_coordinates[:, 1],
             y=bmu_map.bmu_map_coordinates[:, 0],
@@ -710,7 +889,7 @@ class UpperView(W.QWidget):
         )
         self.control.colormap_changed.connect(self.change_map_colormap)
         self.control.bmus_resized.connect(self.bmus_points.setSize)
-        self.control.bmus_toggled.connect(self.bmus_points.setPointsVisible)
+        self.control.bmus_toggled.connect(self.set_master_visibility)
         self.control.colorbar_visible.connect(self.bmu_colorbar.setVisible)
         self.control.continuous_color_selected.connect(
             bmu_colors.update_bmu_colors_gradient
@@ -718,6 +897,15 @@ class UpperView(W.QWidget):
         self.control.categorical_color_selected.connect(
             bmu_colors.update_bmu_colors_categorical
         )
+        self.control.continuous_filter_selected.connect(
+            bmu_filter.update_filter_continuous
+        )
+        self.control.categorical_filter_selected.connect(
+            bmu_filter.update_filter_categorical
+        )
+        self.control.filter_cleared.connect(bmu_filter.clear_filter)
+        bmu_filter.datapoint_mask_updated.connect(self.set_datapoint_filter_mask)
+        bmu_filter.datapoint_mask_updated.connect(bmu_colors.set_datapoint_filter_mask)
 
         # Set the initial colormap to Earth
         self.control.cmap_selector.setCurrentText("Earth")
@@ -733,6 +921,44 @@ class UpperView(W.QWidget):
         x = bmu_values[:, 1]
         y = bmu_values[:, 0]
         self.bmus_points.setData(x=x, y=y)
+
+    @Slot(bool)
+    def set_master_visibility(self, visible: bool):
+        self._master_visible = visible
+        self._apply_visibility()
+
+    @Slot(np.ndarray)
+    def set_datapoint_filter_mask(self, mask: NDArray):
+        self._datapoint_filter_mask = mask
+        self._apply_visibility()
+
+    def _bmu_pass_mask(self) -> NDArray:
+        """Per-unique-BMU boolean: True if that BMU has at least one datapoint passing the active filter."""
+        if self._datapoint_filter_mask is None:
+            return np.ones(len(self.bmu_map), dtype=bool)
+        bmu_ids = self.bmu_map.index_to_unique_mapping
+        counts = np.bincount(
+            bmu_ids, weights=self._datapoint_filter_mask, minlength=len(self.bmu_map)
+        )
+        return counts > 0
+
+    def visibility_mask(self) -> NDArray:
+        """Per-unique-BMU boolean visibility, combining the master show/hide toggle with the active filter."""
+        if not self._master_visible:
+            return np.zeros(len(self.bmu_map), dtype=bool)
+        return self._bmu_pass_mask()
+
+    def datapoint_selection_mask(self) -> NDArray:
+        """Per-datapoint boolean: True if that datapoint is eligible for ROI selection right now."""
+        num_datapoints = len(self.bmu_map.index_to_unique_mapping)
+        if not self._master_visible:
+            return np.zeros(num_datapoints, dtype=bool)
+        if self._datapoint_filter_mask is None:
+            return np.ones(num_datapoints, dtype=bool)
+        return self._datapoint_filter_mask
+
+    def _apply_visibility(self):
+        self.bmus_points.setPointsVisible(self.visibility_mask())
 
     @Slot(str)
     def change_map_colormap(self, cmap: str):
@@ -888,6 +1114,7 @@ class MainView(W.QSplitter):
         base_model: CommonDataModel,
         bmu_map: BMUMap,
         bmu_colors: BMUColors,
+        bmu_filter: BMUFilter,
         parent=None,
     ):
         super().__init__(parent=parent)
@@ -901,6 +1128,7 @@ class MainView(W.QSplitter):
             umap=umap,
             bmu_map=self.bmu_map,
             bmu_colors=bmu_colors,
+            bmu_filter=bmu_filter,
             data_columns=data_model.columns_with_properties,
             base_model=base_model,
             parent=self,
@@ -919,6 +1147,10 @@ class MainView(W.QSplitter):
         scatter_indices, data_indices = self.bmu_map.get_bmu_info_from_map_coordinates(
             selection_coords
         )
+        # Exclude datapoints that don't individually pass the active filter (or are
+        # globally hidden), even if other datapoints on the same BMU do pass it
+        selectable = self.upper_view.datapoint_selection_mask()
+        data_indices = data_indices[selectable[data_indices.flatten()]]
         self.data_model.set_selected_rows(data_indices)
         # self.upper_view.bmus_points.setSelected(scatter_indices)
 
@@ -953,6 +1185,7 @@ class MainSomWindow(W.QMainWindow):
             scaling_factor=scaling_factor,
         )
         bmu_colors = BMUColors(self.data_model, self.bmu_map)
+        bmu_filter = BMUFilter(self.data_model, self.bmu_map)
 
         self.main_view = MainView(
             umap=self.umap,
@@ -960,6 +1193,7 @@ class MainSomWindow(W.QMainWindow):
             base_model=self.base_model,
             bmu_map=self.bmu_map,
             bmu_colors=bmu_colors,
+            bmu_filter=bmu_filter,
             parent=self,
         )
 
