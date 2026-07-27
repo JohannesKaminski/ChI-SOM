@@ -61,7 +61,7 @@ class DataFrameSource(QObject):
         self.set_continuous(data, column_name)
 
     def set_continuous(self, data: NDArray, column_name: str) -> None:
-        data_type = np.dtype(data)
+        data_type = data.dtype
 
         try:
             value_range = [np.min(data), np.max(data)]
