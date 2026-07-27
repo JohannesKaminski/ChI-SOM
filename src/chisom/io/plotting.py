@@ -32,6 +32,15 @@ EarthColorMap = LinearSegmentedColormap.from_list(
     list(zip(EARTH_POS.tolist(), (np.asarray(EARTH_COLORS) / 255).tolist())),
 )
 
+# Tunable layout defaults for `plot_som`. These only take effect where the
+# corresponding keyword argument is left at its default (None/unset);
+# override the keyword argument on a given call rather than editing these.
+DEFAULT_CELL_SIZE_IN = 0.2  # inches per SOM grid cell, used to size `figsize`
+CHROME_ALLOWANCE_IN = 1.6  # inches reserved for the colorbar(s)/outside legend
+DEFAULT_COLORBAR_FRACTION = 0.15  # matplotlib's own colorbar default
+DEFAULT_COLORBAR_PAD = 0.05  # matplotlib's own colorbar default
+DEFAULT_LEGEND_FONTSIZE_PT = 9.0
+
 
 def plot_som(
     umatrix: UMatrix,
@@ -46,8 +55,13 @@ def plot_som(
     alpha_scheme: Optional[str] = "excess_absolute",
     layer: int = -1,
     scaling_factor: int = 3,
-    marker_size: float = 10.0,
+    marker_size: Optional[float] = None,
+    marker_cell_fraction: float = 0.7,
+    legend_ncol: Optional[int] = None,
+    legend_label_maxlen: int = 24,
+    chrome_scale: float = 1.0,
     figsize: Optional[tuple[float, float]] = None,
+    cell_size_in: float = DEFAULT_CELL_SIZE_IN,
     dpi: int = 150,
     ax: Optional[Axes] = None,
     save_as: Optional[Union[str, Path]] = None,
@@ -60,6 +74,15 @@ def plot_som(
     colored by a property of the underlying data. Reproduces the default
     look of the interactive viewer, but works headless (e.g. with the
     Agg backend) and can be written directly to file.
+
+    Sizing of the map image, the BMU markers, and the colorbar(s)/legend is
+    coupled by default: the figure is sized from the SOM's actual grid shape
+    (`cell_size_in`), the axes box is aspect-locked to that same grid shape
+    (`rows / columns`), and marker size is derived from how large a single
+    grid cell actually renders once that layout is resolved. This keeps the
+    map, its markers, and its chrome proportionate to each other regardless
+    of how big or how non-square a given SOM's lattice is. Pass explicit
+    `figsize`/`marker_size` to opt back into fixed, grid-independent sizing.
 
     Parameters
     ----------
@@ -97,15 +120,45 @@ def plot_som(
         Layer to display for a 3D U-matrix.
     scaling_factor : int
         Upscaling factor for the U-matrix interpolation.
-    marker_size : float
-        BMU marker diameter in points.
+    marker_size : float, optional
+        BMU marker diameter in points. By default (None), it is derived
+        from the rendered size of one SOM grid cell (see
+        `marker_cell_fraction`) so markers stay proportionate to the map
+        regardless of grid shape or figure size. Pass a float to pin an
+        exact, grid-independent size instead.
+    marker_cell_fraction : float
+        When `marker_size` is auto-derived, the fraction of one rendered
+        grid cell's size (the smaller of its width/height in points) that
+        the marker diameter should occupy. Ignored if `marker_size` is set.
+    legend_ncol : int, optional
+        Number of columns for the categorical-coloring legend. By default
+        (None), chosen automatically so the legend wraps into additional
+        columns rather than growing arbitrarily tall for large category
+        counts (see `_auto_legend_ncol`).
+    legend_label_maxlen : int
+        Maximum rendered length of a categorical legend label before it is
+        elided with "…", so a few very long category names can't blow up
+        the legend's (and therefore the map's) reserved width.
+    chrome_scale : float
+        Single multiplier applied together to the auto-derived marker size,
+        the colorbar's `fraction`/`pad`, and the legend/colorbar font size,
+        and to the chrome width reserved in an auto-derived `figsize`. Use
+        this to scale all non-map chrome up or down in one step (e.g. for a
+        much larger or smaller `figsize`) instead of tuning each piece of
+        chrome separately. Does not affect an explicitly-passed
+        `marker_size` or `figsize`.
     figsize : tuple of float, optional
-        Figure size in inches, passed to matplotlib.
+        Figure size in inches, passed to matplotlib. By default (None),
+        derived from the SOM's grid shape via `cell_size_in` instead of
+        matplotlib's own grid-independent default.
+    cell_size_in : float
+        Inches per SOM grid cell, used to derive `figsize` when `figsize`
+        is not given. Ignored if `figsize` is set explicitly.
     dpi : int
         Figure resolution, passed to matplotlib.
     ax : Axes, optional
-        Existing axes to draw into. If given, `figsize` and `dpi` are
-        ignored and the legend is placed inside the axes.
+        Existing axes to draw into. If given, `figsize`, `dpi`, and
+        `cell_size_in` are ignored and the legend is placed inside the axes.
     save_as : str or Path, optional
         If given, the figure is saved to this path; the format is inferred
         from the suffix (e.g. ``.pdf``).
@@ -130,13 +183,20 @@ def plot_som(
 
     if ax is None:
         own_figure = True
-        fig, ax = plt.subplots(figsize=figsize, dpi=dpi, layout="constrained")
+        if figsize is None:
+            figsize = (
+                columns * cell_size_in + CHROME_ALLOWANCE_IN * chrome_scale,
+                rows * cell_size_in,
+            )
+        fig, ax = plt.subplots(figsize=figsize, dpi=dpi, layout="compressed")
     else:
         own_figure = False
         root_figure = ax.get_figure(root=True)
         if not isinstance(root_figure, Figure):
             raise ValueError("ax must belong to a Figure")
         fig = root_figure
+
+    ax.set_box_aspect(rows / columns)
 
     scaled_values = interpolate_matrix(selected_values, scaling_factor)
     image = ax.imshow(
@@ -153,7 +213,13 @@ def plot_som(
     )
     ax.set_xticks([])
     ax.set_yticks([])
-    fig.colorbar(image, ax=ax, label="U-height")
+    fig.colorbar(
+        image,
+        ax=ax,
+        label="U-height",
+        fraction=DEFAULT_COLORBAR_FRACTION * chrome_scale,
+        pad=DEFAULT_COLORBAR_PAD * chrome_scale,
+    )
 
     if bmu_coordinates is not None:
         unique_bmu_coordinates, index_to_unique_mapping = np.unique(
@@ -164,6 +230,7 @@ def plot_som(
         )
 
         face_colors: Union[str, NDArray] = "black"
+        legend_fontsize = DEFAULT_LEGEND_FONTSIZE_PT * chrome_scale
         if color_by is not None:
             if data is None:
                 raise ValueError("color_by requires a data source")
@@ -189,32 +256,59 @@ def plot_som(
                         marker="o",
                         markerfacecolor=resolved_colors[category],
                         markeredgecolor="black",
-                        label=str(category),
+                        label=_truncate_label(str(category), legend_label_maxlen),
                     )
                     for category in categories
                 ]
+                ncol = (
+                    legend_ncol
+                    if legend_ncol is not None
+                    else _auto_legend_ncol(len(categories))
+                )
                 if own_figure:
                     fig.legend(
-                        handles=handles, title=color_by, loc="outside right upper"
+                        handles=handles,
+                        title=color_by,
+                        loc="outside right upper",
+                        ncol=ncol,
+                        fontsize=legend_fontsize,
                     )
                 else:
-                    ax.legend(handles=handles, title=color_by)
+                    ax.legend(
+                        handles=handles,
+                        title=color_by,
+                        ncol=ncol,
+                        fontsize=legend_fontsize,
+                    )
             else:
                 property_cmap = plt.get_cmap(cmap) if isinstance(cmap, str) else cmap
                 face_colors, norm = _continuous_face_colors(
                     values, np.astype(index_to_unique_mapping, np.uint32), property_cmap
                 )
                 fig.colorbar(
-                    ScalarMappable(norm=norm, cmap=property_cmap), ax=ax, label=color_by
+                    ScalarMappable(norm=norm, cmap=property_cmap),
+                    ax=ax,
+                    label=color_by,
+                    fraction=DEFAULT_COLORBAR_FRACTION * chrome_scale,
+                    pad=DEFAULT_COLORBAR_PAD * chrome_scale,
                 )
+
+        if marker_size is None:
+            cell_pt = _cell_size_points(fig, ax, rows, columns)
+            effective_marker_size = cell_pt * marker_cell_fraction * chrome_scale
+        else:
+            effective_marker_size = marker_size
+        # Keep the marker edge visible but proportionate; a fixed 1.5pt
+        # stroke (the old default) can swamp a small auto-derived marker.
+        effective_linewidth = float(np.clip(effective_marker_size * 0.12, 0.5, 2.0))
 
         ax.scatter(
             map_coordinates[:, 1],
             map_coordinates[:, 0],
-            s=marker_size**2,
+            s=effective_marker_size**2,
             facecolors=face_colors,
             edgecolors="black",
-            linewidths=1.5,
+            linewidths=effective_linewidth,
         )
 
     if save_as is not None:
@@ -312,3 +406,33 @@ def _categorical_face_colors(
         face_colors[:, 3] = np.clip(weighting(np.astype(ratios, np.float32)), 0, 1)
 
     return face_colors, categories, category_colors
+
+
+def _truncate_label(label: str, max_len: int) -> str:
+    """Elide an over-long legend label so the legend's rendered width stays bounded."""
+    if max_len <= 1 or len(label) <= max_len:
+        return label
+    return label[: max_len - 1] + "…"
+
+
+def _auto_legend_ncol(n_categories: int, max_rows: int = 12) -> int:
+    """Wrap the legend into additional columns once it would exceed `max_rows` entries."""
+    return max(1, -(-n_categories // max_rows))  # ceil division
+
+
+def _cell_size_points(fig: Figure, ax: Axes, rows: int, columns: int) -> float:
+    """
+    Physical size, in points, of one SOM grid cell as actually laid out in
+    `fig`.
+
+    Forces a layout pass (so the constrained/compressed layout solver has
+    already accounted for the colorbar(s)/legend added so far) and reads
+    back the axes' rendered pixel extent, converting to points via the
+    figure's dpi. Used to auto-derive `marker_size` proportionate to how
+    large the map is actually rendered, rather than a fixed constant.
+    """
+    fig.canvas.draw()
+    bbox = ax.get_window_extent()
+    width_pt = bbox.width / fig.dpi * 72.0
+    height_pt = bbox.height / fig.dpi * 72.0
+    return min(width_pt / columns, height_pt / rows)
