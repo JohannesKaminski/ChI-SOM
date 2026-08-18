@@ -80,6 +80,24 @@ start_chisom_viewer(umx, bmus, dataset)
 
 For instructions on how to train SOMs on large dataset using the [PyTorch DataLoader](https://docs.pytorch.org/docs/stable/data.html) interface, please refer to the [How-To Guides](how-to-guides.md) section.
 
+## Viewing a trained SOM from the command line
+
+Once a U-Matrix and the BMUs have been saved to disk, the viewer can be opened directly, without writing a script:
+
+```sh
+chisom view -u umx.npy -b bmus.npy -d dataset.h5 --groups active --structure-column smiles
+```
+
+The datapoint properties passed with `-d`/`--data` can be an HDF5 store created with `HDF5Creator` (`.h5`, `.hdf5`), delimited text (`.csv`, `.tsv`, `.txt`) or Parquet (`.parquet`, `.pq`); `--groups` applies to HDF5 stores only.
+
+Every argument is optional. Starting the viewer with a bare
+
+```sh
+chisom view
+```
+
+opens an empty window, and U-Matrix, BMUs and dataset can be loaded from its _File_ menu instead. The same holds for `start_chisom_viewer`, whose arguments are all optional as well.
+
 ## CAVEATS
 - The _Viewer_ will only work on a systems with a display attached. When running the application on a server via a remote shell and calling `start_chisom_viewer` this will usually lead to errors (`"This application failed to start because no Qt platform plugin could be initialized"`). As solutions to this are very setup dependend, the recommended approach for very large SOMs is to only train the SOM on a powerful remote machine and analyse the trained SOM with the GUI locally.
 - This software may be considered to be in beta stage. While the user-facing API is expected to remain stable up to a 2.0 release, the internal API might change at any release and can not be considered stable.  

@@ -56,6 +56,9 @@ dependencies = [
     "networkx>=3.6.1",
 ]
 
+[project.scripts]
+chisom = "chisom.cli:main"
+
 [project.urls]
 Homepage = "https://kochlab.org"
 Documentation = "https://kochgroup.github.io/ChI-SOM"

@@ -1,3 +1,12 @@
+"""
+Render a static plot of a trained SOM and open the interactive viewer for it.
+
+Opening the viewer alone needs no script at all, the command line equivalent is:
+
+    chisom view -u tests/umx.npy -b tests/bmus.npy -d tests/VDR.h5 \
+        --groups active --structure-column smiles
+"""
+
 import numpy as np
 
 from chisom import start_chisom_viewer

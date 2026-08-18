@@ -1,5 +1,6 @@
 import os
 
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -22,6 +23,7 @@ from chisom._interface.models import (
     EarthColorMap,
     FilterModel,
 )
+from chisom.io import loading
 from chisom.io.datastores import DatasetBase
 
 # NOTE: Ideally, used QtPixmapCache to store a certain amout of images in memory
@@ -815,7 +817,9 @@ class UpperView(W.QWidget):
 
         self.umap = umap
         self.bmu_map = bmu_map
-        self.bmu_filter = bmu_filter  # keep alive: only referenced via signal connections otherwise
+        self.bmu_filter = (
+            bmu_filter  # keep alive: only referenced via signal connections otherwise
+        )
         self.source_model = base_model
         self.bmu_pen = mkPen("k", width=1.5)
         self._master_visible: bool = True
@@ -1155,10 +1159,110 @@ class MainView(W.QSplitter):
         # self.upper_view.bmus_points.setSelected(scatter_indices)
 
 
-class MainSomWindow(W.QMainWindow):
+class DataLoadOptionsDialog(W.QDialog):
+    """
+    Asks for the dataset options that cannot be inferred from the file itself:
+    which column holds the SMILES, and — for HDF5 stores — which groups to load.
+    """
+
+    NO_STRUCTURE_COLUMN = "<none>"
+
     def __init__(
         self,
-        umatrix: NDArray,
+        column_names: list[str],
+        groups: Optional[list[str]] = None,
+        parent=None,
+    ):
+        super().__init__(parent=parent)
+        self.setWindowTitle("Dataset options")
+
+        layout = W.QVBoxLayout(self)
+
+        form_layout = W.QFormLayout()
+        self.structure_selector = W.QComboBox()
+        self.structure_selector.addItem(self.NO_STRUCTURE_COLUMN)
+        self.structure_selector.addItems(column_names)
+        self.structure_selector.setCurrentText(
+            self._guess_structure_column(column_names)
+        )
+        form_layout.addRow("Structure column:", self.structure_selector)
+        layout.addLayout(form_layout)
+
+        self.group_list: Optional[W.QListWidget] = None
+        if groups:
+            layout.addWidget(W.QLabel("Groups to load:"))
+            self.group_list = W.QListWidget()
+            for group in groups:
+                item = W.QListWidgetItem(group)
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                item.setCheckState(Qt.CheckState.Checked)
+                self.group_list.addItem(item)
+            self.group_list.itemChanged.connect(self._update_accept_enabled)
+            layout.addWidget(self.group_list)
+
+        self.buttons = W.QDialogButtonBox(
+            W.QDialogButtonBox.StandardButton.Ok
+            | W.QDialogButtonBox.StandardButton.Cancel
+        )
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
+        layout.addWidget(self.buttons)
+
+    def structure_info_column(self) -> Optional[str]:
+        """The selected structure column, or None if the user chose not to use one."""
+        selected = self.structure_selector.currentText()
+        return None if selected == self.NO_STRUCTURE_COLUMN else selected
+
+    def group_subset(self) -> Optional[list[str]]:
+        """The checked groups, or None if there is no group choice or all are checked."""
+        if self.group_list is None:
+            return None
+        checked = self._checked_groups()
+        return None if len(checked) == self.group_list.count() else checked
+
+    def _checked_groups(self) -> list[str]:
+        if self.group_list is None:
+            return []
+        checked = []
+        for i in range(self.group_list.count()):
+            item = self.group_list.item(i)
+            if item is not None and item.checkState() == Qt.CheckState.Checked:
+                checked.append(item.text())
+        return checked
+
+    @Slot()
+    def _update_accept_enabled(self):
+        # Loading zero groups would yield an empty dataset, so don't allow it
+        ok_button = self.buttons.button(W.QDialogButtonBox.StandardButton.Ok)
+        ok_button.setEnabled(bool(self._checked_groups()))
+
+    @classmethod
+    def _guess_structure_column(cls, column_names: list[str]) -> str:
+        for name in column_names:
+            if name.lower() == "smiles":
+                return name
+        for name in column_names:
+            if "smiles" in name.lower():
+                return name
+        return cls.NO_STRUCTURE_COLUMN
+
+
+class MainSomWindow(W.QMainWindow):
+    ARRAY_FILTER = "NumPy array (*.npy);;All files (*)"
+    DATA_FILTER = (
+        "Datasets (*.h5 *.hdf5 *.csv *.tsv *.txt *.parquet *.pq);;"
+        "HDF5 (*.h5 *.hdf5);;"
+        "CSV/TSV (*.csv *.tsv *.txt);;"
+        "Parquet (*.parquet *.pq);;"
+        "All files (*)"
+    )
+    # Stand-in for "nothing loaded yet", so the map view stays valid while empty
+    PLACEHOLDER_UMATRIX = np.zeros((1, 8, 8), dtype=np.float32)
+    DEFAULT_BMU_SIZE = 10
+
+    def __init__(
+        self,
+        umatrix: Optional[NDArray] = None,
         bmu_coordinates: Optional[NDArray] = None,
         data: Optional[DatasetBase | DataFrame] = None,
         structure_info_column: Optional[str] = None,
@@ -1168,52 +1272,287 @@ class MainSomWindow(W.QMainWindow):
         self.setMinimumSize(QSize(800, 600))
         self.setWindowTitle("ChI-SOM")
 
+        self._umatrix = self._as_layered(umatrix)
+        self._bmu_coordinates = bmu_coordinates
+        self._data = data
+        self._structure_info_column = structure_info_column
+        self._scaling_factor = scaling_factor
+        # Datasets opened through the File menu are ours to close again; one passed
+        # in by a caller belongs to that caller
+        self._owns_data = False
+        self._source_names: dict[str, str] = {}
+
+        menu = self.menuBar()
+
+        file_menu = menu.addMenu("File")
+        file_menu.addAction("Load U-matrix", self.load_umatrix)
+        file_menu.addAction("Load BMUs", self.load_bmus)
+        file_menu.addAction("Load data", self.load_data)
+
+        self._rebuild_views()
+
+    def _rebuild_views(self):
+        """
+        (Re)build the model graph and the central widget from the currently loaded
+        artefacts. Everything from the table model to the control combo boxes is
+        derived from them at construction time, so a change to any artefact is
+        applied by building the whole graph anew.
+        """
+        view_state = self._capture_view_state()
+        previous_models = [
+            getattr(self, "base_model", None),
+            getattr(self, "data_model", None),
+        ]
+
+        umatrix = (
+            self._umatrix if self._umatrix is not None else self.PLACEHOLDER_UMATRIX
+        )
+
         self.base_model = CommonDataModel(
-            data, structure_info_column=structure_info_column, parent=self
+            self._data, structure_info_column=self._structure_info_column, parent=self
         )
-
         self.data_model = FilterModel(self.base_model, parent=self)
-
-        if umatrix.ndim == 2:
-            umatrix = umatrix[np.newaxis, :, :]
-        elif umatrix.ndim != 3:
-            raise ValueError("U-matrix must be 2D or 3D")
-
-        self.umap = UMap(umatrix, scaling_factor=scaling_factor, parent=self)
+        self.umap = UMap(umatrix, scaling_factor=self._scaling_factor, parent=self)
         self.bmu_map = BMUMap(
-            bmu_raw_coordinates=bmu_coordinates,
-            scaling_factor=scaling_factor,
+            bmu_raw_coordinates=self._bmu_coordinates,
+            scaling_factor=self._scaling_factor,
         )
-        bmu_colors = BMUColors(self.data_model, self.bmu_map)
-        bmu_filter = BMUFilter(self.data_model, self.bmu_map)
+        self.bmu_colors = BMUColors(self.data_model, self.bmu_map)
+        self.bmu_filter = BMUFilter(self.data_model, self.bmu_map)
 
         self.main_view = MainView(
             umap=self.umap,
             data_model=self.data_model,
             base_model=self.base_model,
             bmu_map=self.bmu_map,
-            bmu_colors=bmu_colors,
-            bmu_filter=bmu_filter,
+            bmu_colors=self.bmu_colors,
+            bmu_filter=self.bmu_filter,
             parent=self,
         )
 
+        # Disposes of the previous central widget, and with it the previous views
         self.setCentralWidget(self.main_view)
 
         # Set BMUs and trigger for later chages in scaling
         self.bmu_map.map_bmu_coordinates_changed.connect(
             self.main_view.upper_view.set_bmus
         )
-        self.main_view.upper_view.control.set_bmu_state(self.bmu_map.bmu_state, 10)
+        self.main_view.upper_view.control.set_bmu_state(
+            self.bmu_map.bmu_state, view_state["bmu_size"]
+        )
+
+        self._apply_view_state(view_state)
+
+        for model in previous_models:
+            if model is not None:
+                model.deleteLater()
+
+    def _capture_view_state(self) -> dict:
+        """Collect the view settings that should survive a rebuild."""
+        state = {
+            "colormap": "Earth",
+            "bmu_size": self.DEFAULT_BMU_SIZE,
+            "splitter_sizes": None,
+        }
+        main_view = getattr(self, "main_view", None)
+        if main_view is None:
+            return state
+
+        control = main_view.upper_view.control
+        state["colormap"] = control.cmap_selector.currentText()
+        state["bmu_size"] = control.bmu_size_selector.value()
+        state["splitter_sizes"] = main_view.sizes()
+        return state
+
+    def _apply_view_state(self, state: dict):
+        self.main_view.upper_view.control.change_colormap(state["colormap"])
+        if state["splitter_sizes"]:
+            self.main_view.setSizes(state["splitter_sizes"])
+
+    def _update_window_title(self):
+        if not self._source_names:
+            self.setWindowTitle("ChI-SOM")
+            return
+        loaded = ", ".join(
+            f"{label}: {name}" for label, name in self._source_names.items()
+        )
+        self.setWindowTitle(f"ChI-SOM - {loaded}")
+
+    @staticmethod
+    def _as_layered(umatrix: Optional[NDArray]) -> Optional[NDArray]:
+        if umatrix is None:
+            return None
+        if umatrix.ndim == 2:
+            return umatrix[np.newaxis, :, :]
+        if umatrix.ndim != 3:
+            raise ValueError("U-matrix must be 2D or 3D")
+        return umatrix
+
+    @staticmethod
+    def _validation_error(
+        umatrix: Optional[NDArray],
+        bmu_coordinates: Optional[NDArray],
+        data: Optional[DatasetBase | DataFrame],
+    ) -> Optional[str]:
+        """
+        Check whether the given artefacts describe the same SOM, so that loading
+        them in any order can be rejected before anything is swapped in.
+        """
+        if bmu_coordinates is not None and data is not None:
+            if len(bmu_coordinates) != len(data):
+                return (
+                    f"The BMU coordinates describe {len(bmu_coordinates)} datapoints, "
+                    f"but the dataset holds {len(data)}. They do not belong to the "
+                    "same SOM run, or the dataset is restricted to a different subset."
+                )
+
+        if bmu_coordinates is not None and umatrix is not None and len(bmu_coordinates):
+            rows, columns = umatrix.shape[1], umatrix.shape[2]
+            max_row, max_column = bmu_coordinates.max(axis=0)
+            if max_row >= rows or max_column >= columns:
+                return (
+                    f"The BMU coordinates reach up to ({max_row}, {max_column}), which "
+                    f"does not fit the U-matrix lattice of {rows} x {columns} units."
+                )
+
+        return None
+
+    @staticmethod
+    def _close_dataset(data: Optional[DatasetBase | DataFrame]):
+        if isinstance(data, DatasetBase):
+            data.close()
+
+    def _show_error(self, title: str, message: str):
+        W.QMessageBox.critical(self, title, message)
+
+    def _show_warning(self, title: str, message: str):
+        W.QMessageBox.warning(self, title, message)
+
+    @Slot()
+    def load_umatrix(self):
+        file_path, _ = W.QFileDialog.getOpenFileName(
+            self, "Load U-Matrix", "", self.ARRAY_FILTER
+        )
+        if not file_path:
+            return
+
+        try:
+            umatrix = loading.load_umatrix(file_path)
+        except Exception as exc:
+            self._show_error("Could not load the U-matrix", str(exc))
+            return
+
+        error = self._validation_error(umatrix, self._bmu_coordinates, self._data)
+        if error is not None:
+            self._show_warning("U-matrix does not match the loaded data", error)
+            return
+
+        self._umatrix = umatrix
+        self._source_names["U-matrix"] = Path(file_path).name
+        self._rebuild_views()
+        self._update_window_title()
+
+    @Slot()
+    def load_bmus(self):
+        file_path, _ = W.QFileDialog.getOpenFileName(
+            self, "Load BMUs", "", self.ARRAY_FILTER
+        )
+        if not file_path:
+            return
+
+        try:
+            bmu_coordinates = loading.load_bmu_coordinates(file_path)
+        except Exception as exc:
+            self._show_error("Could not load the BMU coordinates", str(exc))
+            return
+
+        error = self._validation_error(self._umatrix, bmu_coordinates, self._data)
+        if error is not None:
+            self._show_warning("BMUs do not match the loaded data", error)
+            return
+
+        self._bmu_coordinates = bmu_coordinates
+        self._source_names["BMUs"] = Path(file_path).name
+        self._rebuild_views()
+        self._update_window_title()
+
+    @Slot()
+    def load_data(self):
+        file_path, _ = W.QFileDialog.getOpenFileName(
+            self, "Load data", "", self.DATA_FILTER
+        )
+        if not file_path:
+            return
+
+        try:
+            data, structure_info_column = self._load_data_with_options(file_path)
+        except Exception as exc:
+            self._show_error("Could not load the dataset", str(exc))
+            return
+
+        if data is None:  # options dialog was cancelled
+            return
+
+        error = self._validation_error(self._umatrix, self._bmu_coordinates, data)
+        if error is not None:
+            self._show_warning("Dataset does not match the loaded BMUs", error)
+            self._close_dataset(data)
+            return
+
+        previous_data = self._data if self._owns_data else None
+        self._data = data
+        self._structure_info_column = structure_info_column
+        self._owns_data = True
+        self._source_names["data"] = Path(file_path).name
+        self._rebuild_views()
+        self._update_window_title()
+        self._close_dataset(previous_data)
+
+    def _load_data_with_options(
+        self, file_path: str
+    ) -> tuple[Optional[DatasetBase | DataFrame], Optional[str]]:
+        """
+        Load a dataset and ask for the options that the file itself doesn't carry.
+        Returns (None, None) if the user cancelled the options dialog.
+        """
+        groups = (
+            loading.inspect_hdf5_groups(file_path)
+            if Path(file_path).suffix.lower() in loading.HDF5_SUFFIXES
+            else None
+        )
+        # Loaded with all groups first, so the dialog can list the actual columns
+        data = loading.load_dataset(file_path)
+        column_names = loading.dataset_column_names(data)
+
+        dialog = DataLoadOptionsDialog(column_names, groups=groups, parent=self)
+        if dialog.exec() != W.QDialog.DialogCode.Accepted:
+            self._close_dataset(data)
+            return None, None
+
+        group_subset = dialog.group_subset()
+        if group_subset is not None:
+            self._close_dataset(data)
+            data = loading.load_dataset(file_path, group_subset=group_subset)
+
+        return data, dialog.structure_info_column()
+
+    def closeEvent(self, event):
+        if self._owns_data:
+            self._close_dataset(self._data)
+        super().closeEvent(event)
 
 
 def start_chisom_viewer(
-    umatrix: NDArray,
+    umatrix: Optional[NDArray] = None,
     bmu_coordinates: Optional[NDArray] = None,
     data: Optional[DatasetBase | DataFrame] = None,
     structure_info_column: Optional[str] = None,
     scaling_factor: int = 3,
 ):
     """Start the GUI interface
+
+    All arguments are optional; anything not passed here can be loaded from the
+    viewer's File menu instead.
 
     Parameters
     ----------
