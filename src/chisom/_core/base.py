@@ -98,7 +98,6 @@ class Trainer(ABC):
         self,
         alpha: np.float32,
         sigma: np.float32,
-        epoch: np.int32,
     ) -> None:
         """
         Update the coefficients used in training.
@@ -112,12 +111,9 @@ class Trainer(ABC):
             Neighborhood radius.
         sigma_sub : np.float32
             A substitute for the sigma value, used in local neighbourhood calculation to ensure the update value is 0 at the end of the radius.
-        epoch : np.int32
-            Epoch number, used to calculate the coefficients.
         """
         self.alpha = alpha
         self.sigma = sigma
-        self.epoch = epoch
 
         self.computed_coefficients = self.compute_coefficients(
             self.distance_grid, self.alpha, self.sigma

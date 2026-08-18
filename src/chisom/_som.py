@@ -1,15 +1,22 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+from functools import partial
+from math import log
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
+import networkx as nx
 import numpy as np
 from numpy.typing import NDArray
+from tqdm import tqdm, trange
 
 from chisom._core.cpu import trainer as cpu_trainer
-from chisom._core.cpu.umatrix import make_umatrix_calculation
+from chisom._core.cpu.distance import make_universal_distance_func
+from chisom._core.cpu.umatrix import compute_neighbor_distances, umatrix_from_neighbor_distances, NeighborDistances
+from chisom._core.graph import u_graph_from_neighbor_distances
 from chisom._core.types import Codebook, UMatrix
+from chisom._core.utils import _decay_exponential, _decay_linear
 from chisom.io._types import DataLoader
 from chisom.io._utils import numpy_collate
 
@@ -71,7 +78,8 @@ class Som:
         neighborhood_kernel
             Shape of the neighborhood kernel, by default "gaussian".
         use_cuda
-            If True, CUDA accelleration is used. Needs numba-cuda. By default False.
+            If True, CUDA accelleration is used. Needs numba-cuda-mlir,
+            installed via the `cu12` or `cu13` extra. By default False.
         use_local_neighborhood
             Sets a hard neighborhood cutoff, by default False.
             Only used on CPU. Significantly increases performance at cost of numerical accuracy.
@@ -148,7 +156,8 @@ class Som:
 
         # Initial setup of codebook
         self.dimensions = np.array((self.rows, self.columns), dtype=np.int32)
-        self.rng = np.random.default_rng(seed)
+        self.seed = seed
+        self.rng = np.random.default_rng(self.seed)
 
         codebook = self.rng.uniform(low, high, (self.rows, self.columns, self.features))
         codebook = np.asarray(codebook, dtype=np.float32, order="C")
@@ -170,64 +179,195 @@ class Som:
             self.fastmath,
         )
 
-        self.umatrix: UMatrix
+        self._vector_dist_func = make_universal_distance_func(self.vector_distance_norm)
+        self._neighbor_distances: NeighborDistances | None = None
+        self._umatrix: NDArray[np.float16] | None = None
+        self._u_graph: nx.Graph | None = None
+
 
     def train(
         self,
         data: NDArray | DataLoader,
-        epoch: int,
-        sigma: float,
+        epochs: int,
         alpha: float,
-    ):
+        batchsize: int = 1,
+        shuffle: bool = True,
+        sigma: Optional[int] = None,
+        alpha_decay: str = "linear",
+        sigma_decay: str = "exponential",
+        alpha_end: float = 0.01,
+        sigma_end: int = 1,
+    ) -> None:
         """
-        Train the SOM with the given data for one epoch
+        Train the SOM with the given data for a number of epochs.
+
+        Runs the full training loop internally, including per-step decay of
+        ``alpha`` and ``sigma`` and (if ``save_progress`` was set on
+        initialization) periodic U-Matrix/codebook checkpointing once per
+        epoch. Progress is reported via tqdm progress bars for both the
+        epoch loop and the per-epoch batch loop.
 
         Parameters
         ----------
-        data : NDArray | DataLoader
-            The data to train the SOM with. If a DataLoader is used, it should be batched.
-            If a numpy array is used, it will be treated as a single batch.
-        epoch : int
-            The current epoch of the training.
-        sigma : float
-            The sigma value for the current epoch.
-            This is used to calculate the neighborhood radius.
-            Must be greater than 0.
-        alpha : float, optional
-            The learning rate for the current epoch.
+        data
+            The data to train the SOM with. If a DataLoader is used, it is
+            iterated batch by batch as configured on the DataLoader itself.
+            If a numpy array is used, it is split into batches of size
+            `batchsize`.
+        epochs
+            Number of epochs to train for.
+        alpha
+            The initial learning rate. Decays to `alpha_end` over the
+            course of training according to `alpha_decay`.
+        batchsize
+            Number of data points per batch. Only used when `data` is a
+            numpy array (ignored for DataLoader input, which defines its
+            own batching), by default 1.
+        shuffle
+            If True, the order of batches is reshuffled at the start of
+            each epoch. Only applies when `data` is a numpy array;
+            DataLoader shuffling is controlled by the DataLoader itself.
+            By default True.
+        sigma
+            The initial neighborhood radius. Must be greater than 0 if
+            given. Defaults to None, in which case it is set to half the
+            smaller of the map's row/column dimensions.
+        alpha_decay
+            The decay schedule for `alpha`, one of "linear" or
+            "exponential", by default "linear".
+        sigma_decay
+            The decay schedule for `sigma`, one of "linear" or
+            "exponential", by default "exponential".
+        alpha_end
+            The value `alpha` decays towards by the end of training, by
+            default 0.01.
+        sigma_end
+            The value `sigma` decays towards by the end of training, by
+            default 1.
 
         Raises
         ------
         ValueError
-            If sigma is less than or equal to 0.
+            If `sigma` is given and is less than or equal to `sigma_end`.
+        ValueError
+            If `alpha` is given and is less than or equal to `alpha_end`.
+        ValueError
+            If `alpha_decay` or `sigma_decay` is not "linear" or
+            "exponential".
         """
 
-        if sigma <= 0:
-            raise ValueError("Sigma can not be zero or smaller")
+        if sigma is not None and sigma <= sigma_end:
+            raise ValueError("Sigma can not be less than or equal to sigma_end")
+
+        if sigma is None:
+            sigma = min(self.rows, self.columns) // 2
+
+        if alpha is not None and alpha <= alpha_end:
+            raise ValueError("Alpha can not be less than or equal to alpha_end")
+
+        if alpha is None:
+            alpha = 0.1
 
         # Transform the input data to adhere to batching and CPU training if necessary
-        data = self._transform_in_data(data)
+        batches = self._transform_in_data(data, batchsize)
+        steps = epochs * len(batches)
 
-        # Use the update coefficients function to set the trainers parameter for the epoch, including factors for map distance
+        if alpha_decay == "linear":
+            alpha_decay_func = partial(_decay_linear, init=alpha, decay=steps)
+        elif alpha_decay == "exponential":
+            alpha_decay_func = partial(
+                _decay_exponential, init=alpha, decay=steps / -log(alpha_end / alpha)
+            )
+        else:
+            raise ValueError(f"Unknown alpha decay: {alpha_decay}")
+
+        if sigma_decay == "linear":
+            sigma_decay_func = partial(_decay_linear, init=sigma, decay=steps)
+        elif sigma_decay == "exponential":
+            sigma_decay_func = partial(
+                _decay_exponential, init=sigma, decay=steps / -log(sigma_end / sigma)
+            )
+        else:
+            raise ValueError(f"Unknown sigma decay: {sigma_decay}")
+
+        # A fresh training run rebuild the U-Matrix history and invaliates
+        # the cached U-Matrix and graph.
+        self._neighbor_distances = None
+        self._umatrix = None
+        self._u_graph = None
+
+
+        step = 0
+        for epoch in trange(epochs, desc="Epoch: "):
+            if shuffle and isinstance(batches, list):
+                epoch_data = [batches[i] for i in self.rng.permutation(len(batches))]
+            else:
+                epoch_data = batches
+
+            for batch in tqdm(epoch_data, leave=False, desc="Batch: "):
+                # Use the update coefficients function to set the trainers parameter for the step, including factors for map distance
+                self.trainer_instance.update_coefficients(
+                    alpha=np.float32(alpha_decay_func(step)),
+                    sigma=np.float32(sigma_decay_func(step)),
+                )
+                self.trainer_instance.train(batch)
+                step += 1
+            self._neighbor_distances = None
+
+            # Append this epochs's U-Matrix layer and checkpoint to disk
+            if self.outpath is not None:
+                layer = self._compute_umatrix_layer()[np.newaxis, ...]
+                if self._umatrix is None:
+                    self._umatrix = layer
+                else:
+                    self._umatrix = np.concat(
+                        (
+                            self._umatrix,
+                            layer
+                        ),
+                        axis=0,
+                    )
+                np.save(self.outpath / "codebook", self.trainer_instance.codebook)
+
+        if self._umatrix is None:
+            self._umatrix = self._compute_umatrix_layer()[np.newaxis, ...]
+
+    def train_batch(self, data: NDArray, sigma: int, alpha: float) -> None:
+        """
+        Manually train the SOM with a single batch of data.
+
+        Provides fine-grained control over training by allowing the caller
+        to set `alpha` and `sigma` explicitly for a single batch, bypassing
+        the automatic per-epoch decay scheduling used by `train`. Useful for
+        custom training loops or schedules not covered by `train`.
+
+        Parameters
+        ----------
+        data
+            A single batch of vectors to train the SOM on.
+        sigma
+            The neighborhood radius to use for this batch.
+        alpha
+            The learning rate to use for this batch.
+        """
         self.trainer_instance.update_coefficients(
             alpha=np.float32(alpha),
             sigma=np.float32(sigma),
-            epoch=np.int32(epoch),
         )
-        for batch in data:
-            self.trainer_instance.train(batch)
+        self.trainer_instance.train(data)
+        self._umatrix = None
+        self._u_graph = None
+        self._neighbor_distances = None
 
-        # Save the umatrix and codebook if save_progress is set
-        if self.outpath is not None:
-            self.umatrix = np.concat(
-                (
-                    self.umatrix,
-                    self.get_umatrix()[np.newaxis, :, :],
-                ),
-                axis=0,
+    def _get_neighbor_distances(self) -> NeighborDistances:
+        if self._neighbor_distances is None:
+            self._neighbor_distances = compute_neighbor_distances(
+                self.codebook, self._vector_dist_func
             )
-            np.save(self.outpath / "umatrix", self.umatrix)
-            np.save(self.outpath / "codebook", self.trainer_instance.codebook)
+        return self._neighbor_distances
+
+    def _compute_umatrix_layer(self) -> UMatrix:
+        return umatrix_from_neighbor_distances(self._get_neighbor_distances())
 
     @property
     def codebook(self) -> Codebook:
@@ -236,21 +376,60 @@ class Som:
     @codebook.setter
     def codebook(self, codebook: Codebook) -> None:
         self.trainer_instance.codebook = codebook
+        self._umatrix = None
+        self._u_graph = None
+        self._neighbor_distances = None
 
     def get_umatrix(self) -> UMatrix:
+        if self._umatrix is None:
+            self._umatrix = self._compute_umatrix_layer()[np.newaxis, ...]
+        raise DeprecationWarning("som.get_umatrix() is deprecated; use som.umatrix instead")
+        return self._umatrix
+
+    @property
+    def umatrix(self) -> UMatrix:
         """
-        Calculate the UMatrix for the current codebook
+        The U-Matrix for the SOM, as a 3D array of shape
+        (n_layers, rows, columns).
+
+        Computed and cached after training. When ``save_progress`` is set,
+        one layer is stored per epoch (training history); otherwise a single
+        final layer is stored. Accessing this before training computes a
+        single layer from the current (untrained) codebook on demand.
 
         Returns
         -------
-        UMatrix
-            The UMatrix for the current codebook.
+        NDArray[np.float16]
+            The U-Matrix, shape (n_layers, rows, columns).
         """
-        # TODO move to trainer factory, support more distances
-        umatrix_func = make_umatrix_calculation(self.vector_distance_norm)
-        umatrix = umatrix_func(self.codebook)
+        if self._umatrix is None:
+            self._umatrix = self._compute_umatrix_layer()[np.newaxis, ...]
 
-        return umatrix
+        return self._umatrix
+
+    @property
+    def u_graph(self) -> nx.Graph:
+        """
+        The U-Distance graph for the current codebook.
+
+        Undirected, edge-weighted networkx graph whose nodes
+        are grid positions (row, column) and whose edges connect toroidal
+        grid neighbors, weighted by the high-dimensional distance between
+        the corresponding codebook vectors, the same per-neighbor
+        distances used to build the U-Matrix. The graph is cached, but bind
+        it to a local name and reuse that for repeated
+        `chisom.analysis.u_distance` (or future ranking) queries.
+
+        Returns
+        -------
+        nx.Graph
+            The U-Distance graph for the current codebook.
+        """
+        if self._u_graph is None:
+            self._u_graph = u_graph_from_neighbor_distances(
+                self._get_neighbor_distances(), self.rows, self.columns
+            )
+        return self._u_graph
 
     def predict(
         self, data: NDArray | DataLoader
@@ -276,12 +455,15 @@ class Som:
             Error if the data format is not known
         """
 
-        data = self._transform_in_data(data)
-        if isinstance(data, DataLoader):
-            data.shuffle = False
+        batchsize = (
+            (data.batch_size or 1) if isinstance(data, DataLoader) else len(data)
+        )
+        batches = self._transform_in_data(data, batchsize)
+        if isinstance(batches, DataLoader):
+            batches.shuffle = False
 
         bmu_batches, qe_batches = [], []
-        for batch in data:
+        for batch in batches:
             bmu_batch, qe_batch = self.trainer_instance.predict(batch)
             bmu_batches.append(bmu_batch)
             qe_batches.append(qe_batch.flatten())
@@ -291,17 +473,17 @@ class Som:
         return bmu.astype(np.uint16), qe
 
     def _transform_in_data(
-        self, data: NDArray | DataLoader
-    ) -> NDArray[np.float32] | DataLoader:
-        # Ad new dimension if a numpy array is used as the input format,
-        # to conform to batched data iterating
-        if isinstance(data, np.ndarray):
-            data = np.astype(data[np.newaxis, :], np.float32)
-
+        self, data: NDArray | DataLoader, batchsize: int
+    ) -> List[NDArray[np.float32]] | DataLoader:
         # return_fp_from_dict is necessary to select to correct column from the Dataloader
         if isinstance(data, DataLoader):
             # Collate to numpy arrays if using CPU calculation
             if not self.use_cuda:
                 data.collate_fn = numpy_collate
+            return data
 
-        return data
+        # Split a numpy array input into a list of batches of size `batchsize`,
+        # to conform to batched data iterating
+        data = np.astype(data, np.float32)
+        n_batches = -(-len(data) // batchsize)  # ceil division
+        return np.array_split(data, n_batches)

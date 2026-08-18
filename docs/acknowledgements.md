@@ -1,5 +1,5 @@
 Data used in the examples and tests is sourced from
---8<-- "tests/testdata/VDR/README.md:3:5"
+--8<-- "tests/VDR/README.md:3:5"
   
 
 The CUDA argmin implementation is derived from GBJim's argmax_example.cu at

@@ -1,18 +1,42 @@
 site_name: ChI-SOM Docs
+site_url: https://kochgroup.github.io/ChI-SOM/
 repo_url: https://github.com/kochgroup/ChI-SOM
 repo_name: kochgroup/ChI-SOM
 site_author: Johannes Kaminski, Oliver Koch
 
 theme:
   name: material
-  navigation_depth: 2
+  features:
+  - navigation.sections
+  - navigation.top
+  - content.code.copy
+  palette:
+  - media: "(prefers-color-scheme: light)"
+    scheme: default
+    toggle:
+      icon: material/weather-night
+      name: Switch to dark mode
+  - media: "(prefers-color-scheme: dark)"
+    scheme: slate
+    toggle:
+      icon: material/weather-sunny
+      name: Switch to light mode
 
 markdown_extensions:
+- admonition
+- attr_list
+- md_in_html
+- pymdownx.details
 - pymdownx.snippets:
+- pymdownx.superfences
+- pymdownx.tabbed:
+    alternate_style: true
+- toc:
+    permalink: true
 
 plugins:
 - search
-- macros 
+- macros
 - mkdocstrings:
     handlers:
       python:
@@ -33,7 +57,11 @@ plugins:
 
 
 nav:
-  - Main:  README.md
+  - Home:  README.md
+  - Installation: installation.md
+  - The Viewer: gui.md
   - How-To Guides: how-to-guides.md
+  - Upgrading to 1.1: upgrading.md
+  - Limitations: limitations.md
   - Reference: reference.md
   - Acknowledgments: acknowledgements.md

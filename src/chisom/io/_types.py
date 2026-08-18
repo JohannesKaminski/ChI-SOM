@@ -1,23 +1,23 @@
-from collections.abc import Callable
-from typing import Dict, List, Protocol, Set, Tuple, TypeVar, runtime_checkable
+from collections.abc import Callable, Iterator
+from typing import Optional, Protocol, Set, TypeVar, runtime_checkable
 
 import numpy as np
 import tables
 from numpy.typing import NDArray
+from rdkit.Chem.rdchem import Mol
 
-Mol = TypeVar("Mol")
 Smiles = TypeVar("Smiles", bound=str)
 Atom_Type = TypeVar("Atom_Type", str, int, float, np.dtype)
 MolGenerator = Callable[[str], Mol]
-FileList = Dict[str, list[str]]
-ExtraColumns = Dict[str, Tuple[int, str]]
-InputLine = List[str]
-OutputLine = Dict[str, List[str] | NDArray]
-LeafMap = Dict[str, Tuple[int, Atom_Type, str] | Tuple[int, Atom_Type]]
-Range = TypeVar("Range", List[float], Set)
-RangesDict = Dict[str, Dict[str, str | Range]]
+FileList = dict[str, list[str]]
+ExtraColumns = dict[str, tuple[int, str]]
+InputLine = list[str]
+OutputLine = dict[str, list[str] | NDArray]
+LeafMap = dict[str, tuple[int, Atom_Type, str] | tuple[int, Atom_Type]]
+Range = TypeVar("Range", list[float], Set)
+RangesDict = dict[str, dict[str, str | Range]]
 FileRoot = type(tables.Group)
-FingerprintStack = TypeVar("FingerprintStack", NDArray, List[NDArray])
+FingerprintStack = TypeVar("FingerprintStack", NDArray, list[NDArray])
 Packer = Callable[[FingerprintStack], NDArray]
 
 
@@ -29,10 +29,15 @@ class rdFingerprintGenerator:
 @runtime_checkable
 class DataLoader(Protocol):
     collate_fn: Callable
+    batch_size: Optional[int]
 
     def __init__(
         self, dataset, batch_size, shuffel, num_workers, collate_fn, pin_memory
     ): ...
+
+    def __len__(self) -> int: ...
+
+    def __iter__(self) -> Iterator[NDArray]: ...
 
 
 Timeout = TypeVar("Timeout", int, float)

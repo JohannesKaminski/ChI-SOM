@@ -98,14 +98,10 @@ class CPUTrainerLocal(CPUTrainerBase):
                 self.computed_coefficients,
             )
 
-    def update_coefficients(self, alpha, sigma, epoch):
+    def update_coefficients(self, alpha, sigma):
         self.alpha = alpha
         self.sigma = sigma
         self.relative_neighbors, relative_distances = self.map_distance_func(sigma)
-        if epoch == 0:
-            if self.num_columns > self.num_rows:
-                self.relative_neighbors = np.delete(self.relative_neighbors, -1, 0)
-                relative_distances = np.delete(relative_distances, -1, 0)
 
         self.computed_coefficients = self.compute_coefficients(
             relative_distances,

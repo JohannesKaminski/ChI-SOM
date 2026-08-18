@@ -359,12 +359,12 @@ class StoreCreator(ABC):
 
                 for leaf_name, values in out_batch.items():
                     local_range_dict_item = local_range_dict[leaf_name]
-                    if local_range_dict_item["type"] == "continous":
+                    if local_range_dict_item["type"] == "continuous":
                         local_range_dict_item["value_range"][0] = min(
                             local_range_dict_item["value_range"][0], np.min(values)
                         )
                         local_range_dict_item["value_range"][1] = max(
-                            local_range_dict_item["value_range"][0], np.max(values)
+                            local_range_dict_item["value_range"][1], np.max(values)
                         )
                     elif local_range_dict_item["type"] == "categorical":
                         local_range_dict_item["value_range"] = set.union(
@@ -380,7 +380,7 @@ class StoreCreator(ABC):
 
         ranges_lock.acquire()
         for leaf_name, local_values in local_range_dict.items():
-            if local_values["type"] == "continous":
+            if local_values["type"] == "continuous":
                 local_values["value_range"][0] = min(
                     local_values["value_range"][0],
                     ranges_dict[leaf_name]["value_range"][0],
@@ -432,7 +432,7 @@ class StoreCreator(ABC):
         _ = leaf_map.pop("primary")
         ranges_dict = {}
         ranges_dict["fingerprint"] = {
-            "type": "continous",
+            "type": "continuous",
             "value_range": np.array([np.inf, -np.inf]),
         }
         ranges_dict["smiles"] = {"type": "na", "value_range": []}
@@ -440,9 +440,9 @@ class StoreCreator(ABC):
         for leaf_name, leaf_properties in leaf_map.items():
             try:
                 gui_use = leaf_properties[2]
-                if gui_use == "continous":
+                if gui_use == "continuous":
                     ranges_dict[leaf_name] = {
-                        "type": "continous",
+                        "type": "continuous",
                         "value_range": np.array([np.inf, -np.inf]),
                     }
 
@@ -612,8 +612,8 @@ class HDF5Creator(StoreCreator):
         file_hierarchy: FileList,
         out_path: str,
         leaf_map: LeafMap,
-        sep: str,
         skip_lines: int = 0,
+        sep: str = "\t",
     ) -> None:
         """
         Run creation of HDF5 storage file
@@ -626,10 +626,11 @@ class HDF5Creator(StoreCreator):
             Output path for the HDF5 files.
         leaf_map :
             Dictionary of file structure and datatypes, see How-To Guides.
-        sep :
-            Column seperator.
         skip_lines :
-            Number of lines to skip at the beginning of file, e.g. for headers.
+            Number of lines to skip at the beginning of file, e.g. for
+            headers, by default 0.
+        sep :
+            Column seperator, by default "\\t".
         """
         file_hierarchy = _parse_file_hierarchy(file_hierarchy, self.file_extensions)
         out_path = _parse_output_path(out_path, [".h5", ".hdf5"])

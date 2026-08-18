@@ -1,102 +1,115 @@
-from typing import List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
-import numpy.typing as npt
 import pandas as pd
+from numpy.typing import NDArray
 from pandas import DataFrame
 from PIL import ImageQt
-from pyqtgraph import mkBrush
+from pyqtgraph import ColorMap, mkBrush
 from PySide6 import QtCore
-from PySide6.QtCore import QObject, Signal, Slot
+from PySide6.QtCore import QModelIndex, QObject, QPersistentModelIndex, Qt, Signal, Slot
 from PySide6.QtGui import QBrush, QPixmap
 from rdkit import Chem
 from rdkit.Chem import Draw as rdDraw
 
-from .helpers import create_bmu_composition, min_max
+from chisom._core.render import (
+    CYCLIC_COLORS,
+    CYCLIC_POS,
+    EARTH_COLORS,
+    EARTH_POS,
+    RatioWeighting,
+    bmu_raw_to_map_coordinates,
+    min_max,
+)
+from chisom._core.types import bmu_type
 from chisom.io.datastores import DatasetBase
 
-bmu_type = np.dtype([("row", np.uint16), ("column", np.uint16)])
+from ._types import (
+    BMUCompositionCategorical,
+    BMUCompositionContinuous,
+    ColorDataSource,
+    ColumnProperties,
+    TabularDatasource,
+)
+
+EarthColorMap = ColorMap(pos=EARTH_POS, color=EARTH_COLORS)
+
+CyclicGreen = ColorMap(pos=CYCLIC_POS, color=CYCLIC_COLORS)
 
 
-class RatioWeightingSchemes:
-    @staticmethod
-    def gini_coefficient(x, axis=1):
-        """
-        Compute Gini coefficient along specified axis of a 2D matrix,
-        considering only non-zero values. Uses vectorized operations for efficiency.
+class DataFrameSource(QObject):
+    def __init__(self, *args, **kwargs):
+        self._df = pd.DataFrame(*args, **kwargs)
 
-        Parameters:
-        -----------
-        x : 2D numpy array or array-like
-            Input matrix
-        axis : int, default=1
-            Axis along which to compute the Gini coefficient (0 for rows, 1 for columns)
+        # Gather info about columns, similar to ChemDataset, but slow
+        self.columns_with_properties: dict[str, ColumnProperties] = {}
+        for column in self._df.columns:
+            data = self._df[column].to_numpy()
 
-        Returns:
-        --------
-        numpy.ndarray
-            Array of Gini coefficients for each row/column
-        """
-        x = np.asarray(x)
+            if len(set(data[:100])) <= 10:
+                self.set_categorical(data, column)
+            else:
+                self.set_continuous(data, column)
 
-        # Create a mask for non-zero values
-        nonzero_mask = x != 0
+    @property
+    def column_names(self) -> list[str]:
+        return list(self._df.columns)
 
-        # Count non-zero elements along the specified axis
-        n_nonzero = np.sum(nonzero_mask, axis=axis)
+    @Slot(str)
+    def set_column_continuous(self, column_name: str) -> None:
+        data = self._df[column_name].to_numpy()
+        self.set_continuous(data, column_name)
 
-        # Create arrays to store results
-        result = np.ones(x.shape[1 - axis])
+    def set_continuous(self, data: NDArray, column_name: str) -> None:
+        data_type = data.dtype
 
-        # For rows/slices with at least 2 non-zero values
-        valid_indices = np.where(n_nonzero >= 2)[0]
+        try:
+            value_range = [np.min(data), np.max(data)]
 
-        if len(valid_indices) > 0:
-            # Process each valid row/column
-            for idx in valid_indices:
-                if axis == 1:
-                    # Get the non-zero values for this row
-                    values = x[idx][nonzero_mask[idx]]
-                else:
-                    # Get the non-zero values for this column
-                    values = x[:, idx][nonzero_mask[:, idx]]
+        except Exception:
+            try:
+                value_range = [min(data), max(data)]
+            except Exception:
+                data_type = None
+                value_type = "na"
+                value_range = []
+            else:
+                value_type = "continuous"
+        else:
+            value_type = "continuous"
 
-                # Efficient computation of all pairwise absolute differences
-                diff_matrix = np.abs(np.subtract.outer(values, values))
+        self.columns_with_properties[column_name] = ColumnProperties(
+            data_type, value_type, value_range
+        )
 
-                # Calculate the Gini coefficient
-                gini = np.sum(diff_matrix) / (2 * len(values) * np.sum(values))
-                result[idx] = gini
+    @Slot(str)
+    def set_column_categorical(self, column_name: str) -> None:
+        data = self._df[column_name].to_numpy()
+        self.set_categorical(data, column_name)
 
-        return result
+    def set_categorical(self, data: NDArray, column_name: str) -> None:
+        data_type = data.dtype
 
-    @staticmethod
-    def excess_coefficient_absolute(x, axis=1):
-        # Get indices that sort the array along the specified axis
-        if x.shape[axis] < 2:
-            return np.ones(len(x))
-        sorted_x = np.argsort(x, axis=axis)
-        # Get the largest and second largest values along the specified axis
-        largest_x = np.take_along_axis(x, sorted_x[:, -1:], axis=axis)
-        second_largest_x = np.take_along_axis(x, sorted_x[:, -2:-1], axis=axis)
-        # Calculate the excess
-        excess = largest_x - second_largest_x
-        excess[excess < 0] = 0
-        return excess.flatten()
+        try:
+            unique = np.unique(data)
+        except Exception:
+            unique = set(data)
 
-    @staticmethod
-    def excess_coefficient_relative(x, axis=1):
-        # Get indices that sort the array along the specified axis
-        sorted_x = np.argsort(x, axis=axis)
-        # Get the largest and second largest values along the specified axis
-        largest_x = np.take_along_axis(x, sorted_x[:, -1:], axis=axis)
-        second_largest_x = np.take_along_axis(x, sorted_x[:, -2:-1], axis=axis)
-        # Calculate the excess
-        excess = 1 - second_largest_x / largest_x
-        # Set negative excess values to 0
-        # This is done to avoid negative excess values, which can occur if the second largest value is larger than the largest value
-        excess[excess < 0] = 0
-        return excess.flatten()
+        value_type = "categorical"
+        value_range = list(unique)
+
+        self.columns_with_properties[column_name] = ColumnProperties(
+            data_type, value_type, value_range
+        )
+
+    def __len__(self) -> int:
+        return len(self._df.index)
+
+    def get_values_for_column(self, column_name: str) -> NDArray:
+        return self._df[column_name].to_numpy()
+
+    def get_value(self, row_idc: Union[int, list[int]], column_idx: int) -> Any:
+        return self._df.iloc[row_idc, column_idx]
 
 
 class BMUMap(QObject):
@@ -110,30 +123,41 @@ class BMUMap(QObject):
 
     def __init__(
         self,
-        bmu_raw_coordinates: Optional[npt.NDArray],
+        bmu_raw_coordinates: Optional[NDArray[np.float16]],
         scaling_factor: int,
-        data_index,
         parent: Optional[QObject] = None,
     ) -> None:
         super().__init__(parent=parent)
-        self.bmu_map_coordinates: npt.NDArray
-        self.unique_bmu_coordinates: npt.NDArray
-        self.index_to_unique_mapping: npt.NDArray[np.int32]
+        self.bmu_map_coordinates: NDArray[np.float16] = np.empty(
+            (0, 2), dtype=np.float16
+        )
+        self.bmu_raw_coordinates_rec: NDArray = np.empty((0, 2), dtype=bmu_type)
+
+        self.unique_bmu_coordinates: NDArray[np.uint16] = np.empty(
+            (0, 2), dtype=np.uint16
+        )
+        self.unique_bmu_coordinates_set: set[tuple[int, int]] = set()
+        self.unique_bmu_coordinates_rec: NDArray = np.rec.array(
+            np.empty(0, dtype=bmu_type)
+        )
+        self.index_to_unique_mapping: NDArray[np.uint32] = np.empty(0, dtype=np.uint32)
+
         self.scaling_factor: int = scaling_factor
         self.padding: int = 0
 
-        self.bmu_state: int  # Used to track the visibility of the BMUs in the scatterplot and button position in the control widget
+        self.bmu_state: Qt.CheckState  # Used to track the visibility of the BMUs in the scatterplot and button position in the control widget
 
         if bmu_raw_coordinates is not None:
-            self.bmu_raw_coordinates_rec: Optional[npt.ArrayLike] = np.rec.array(
+            self.bmu_raw_coordinates_rec = np.rec.array(
                 bmu_raw_coordinates, dtype=bmu_type
             )
             # Returns the unique coordinates of the BMUs and for each original BMU to which unique bmus it correspond with.
-            self.unique_bmu_coordinates, self.index_to_unique_mapping = np.unique(
+            _unique_bmu_coordinates, _index_to_unique_mapping = np.unique(
                 bmu_raw_coordinates, axis=0, return_inverse=True
             )
+            self.unique_bmu_coordinates = np.astype(_unique_bmu_coordinates, np.uint16)
             self.index_to_unique_mapping = np.astype(
-                self.index_to_unique_mapping, np.int32
+                _index_to_unique_mapping, np.uint32
             )
             # Transform to set of tuples for faster lookup
             self.unique_bmu_coordinates_set = set(
@@ -143,23 +167,18 @@ class BMUMap(QObject):
             self.unique_bmu_coordinates_rec = np.rec.array(
                 self.unique_bmu_coordinates, dtype=bmu_type
             )
-            self.bmu_state = 2
+            self.bmu_state = Qt.CheckState.Checked
         else:
-            self.bmu_state = 1
-            self.bmu_raw_coordinates_rec = None
+            self.bmu_state = Qt.CheckState.Unchecked
 
         self.calculate_bmu_map_coordinates()
 
     def __len__(self) -> int:
-        return (
-            len(self.unique_bmu_coordinates)
-            if self.bmu_raw_coordinates_rec is not None
-            else 0
-        )
+        return len(self.unique_bmu_coordinates)
 
     def get_bmu_info_from_map_coordinates(
-        self, map_coordinates: npt.NDArray
-    ) -> Tuple[npt.NDArray, npt.NDArray]:
+        self, map_coordinates: NDArray
+    ) -> tuple[NDArray, NDArray]:
         # Transform the coordinates to tuples and convert to a set for faster membership testing
         raw_coordinates = np.empty_like(map_coordinates, dtype=np.float32)
 
@@ -194,6 +213,15 @@ class BMUMap(QObject):
         )
         return scatterplot_idx, data_idx
 
+    def get_dataset_rows_for_unique_index(self, scatter_index: int) -> NDArray:
+        """
+        Given the index of a point in `unique_bmu_coordinates` (matching the
+        index returned by a pyqtgraph SpotItem.index() for the BMU
+        scatterplot), return the dataset row indices of all samples mapped
+        to that BMU cell.
+        """
+        return np.argwhere(self.index_to_unique_mapping == scatter_index).flatten()
+
     def calculate_bmu_map_coordinates(self) -> None:
         """
         Returns the BMU coordinates in the map space.
@@ -201,15 +229,8 @@ class BMUMap(QObject):
         """
         if len(self.unique_bmu_coordinates) > 0:
             self.padding = self.scaling_factor // 2
-            margin = self.padding + 0.5
-            self.bmu_map_coordinates = np.empty(
-                (len(self.unique_bmu_coordinates), 2), dtype=np.float32
-            )
-            self.bmu_map_coordinates[:, 0] = (
-                self.unique_bmu_coordinates[:, 0] * self.scaling_factor + margin
-            )
-            self.bmu_map_coordinates[:, 1] = (
-                self.unique_bmu_coordinates[:, 1] * self.scaling_factor + margin
+            self.bmu_map_coordinates = bmu_raw_to_map_coordinates(
+                self.unique_bmu_coordinates, self.scaling_factor
             )
 
             self.map_bmu_coordinates_changed.emit(self.bmu_map_coordinates)
@@ -254,112 +275,74 @@ class CommonDataModel(QtCore.QAbstractTableModel):
             Raised if the data type is not supported.
         """
         super().__init__(parent=parent)
-        self.type: str
-        self.data_instance: Union[DatasetBase, DataFrame]
-        self.data_index: Union[npt.NDArray, pd.Index]
-        self.bmu_map: BMUMap = []
+        self.columns_with_properties: Dict[str, ColumnProperties]
+        self.column_back_map: Dict[int, int] = {}
 
-        if datasource is None:
-            self.type = "None"
-            self.data_instance = None
-            self.data_columns = []
-            self.columns = []
+        self.data_source: TabularDatasource = (
+            datasource
+            if isinstance(datasource, DatasetBase)
+            else DataFrameSource(datasource)
+        )
+        self.get_values_for_column = self.data_source.get_values_for_column
 
-        elif isinstance(datasource, pd.DataFrame):
-            self.type = "Dataframe"
-            self.data_instance = datasource
-            self.data_columns = self.data_instance.columns.to_list()
+        # Store columns used in the table. Size determines number of columns
+        # Copy to remove unwanted columns (e.g., "fingerprint")
+        self.columns = [column for column in self.data_source.column_names]
 
-            # Gather info about columns, similar to ChemDataset, but slow
-            self.data_columns_with_properties = {}
-            for column in self.data_columns:
-                data = self.data_instance[column].to_list()
-                data_type = np.dtype(type(data[0]))
+        # Store columns with properties for color selector
+        # Copy to remove unwanted columns for color selector
+        self.columns_with_properties = {
+            name: ColumnProperties(*properties)
+            for name, properties in self.data_source.columns_with_properties.items()
+        }
 
-                unique = set(data)
-
-                if len(unique) <= 10:
-                    value_type = "categorical"
-                    value_range = list(unique)
-                else:
-                    try:
-                        value_type = "continous"
-                        value_range = [min(data), max(data)]
-                    # Catch Columns with lots of different text (e.g. SMILES)
-                    except Exception:
-                        value_type = "na"
-                        value_range = []
-
-                self.data_columns_with_properties[column] = (
-                    data_type,
-                    (value_type, value_range),
-                )
-
-            def get_values_for_column(property_name: str):
-                return self.data_instance[property_name].to_list()
-
-            self.get_values_for_column = get_values_for_column
-
-        elif isinstance(datasource, DatasetBase):
-            self.type = "ChemDataset"
-            self.data_instance = datasource
-            self.data_columns = self.data_instance.columns
-            self.data_columns_with_properties = (
-                self.data_instance.columns_with_properties
-            )
-            self.get_values_for_column = self.data_instance.get_values_for_column
-
-        else:
-            raise ValueError("Unsupported data type")
-
-        # Store for later use with GUI Table view
-        self.columns = self.data_columns.copy()
-        # Store for later use with GUI Color selector
-        self.columns_with_properties = self.data_columns_with_properties.copy()
-        if "fingerprint" in self.data_columns:
+        # "fingerprint is unwanted in either"
+        if "fingerprint" in self.columns:
             self.columns.remove("fingerprint")
             self.columns_with_properties.pop("fingerprint")
 
         # Remove unwanted columns and info for colorselector
         to_pop = []  # cannot change size of dictionary during iterating over it
         for name, property in self.columns_with_properties.items():
-            if property[1][0] == "na":
+            if property.value_type == "na":
                 to_pop.append(name)
         for name in to_pop:
             self.columns_with_properties.pop(name)
 
         # Map the new column indices back to the sources column indices
-        if structure_info_column is not None:
+        if structure_info_column in self.data_source.column_names:
             self.columns.append("Structure")
-            self.column_name_map = {}
+            data_source_names = self.data_source.column_names
             for i, name in enumerate(self.columns):
                 if name == "Structure":
-                    self.column_name_map[i] = self.data_columns.index(
+                    # Used indexing into the data source's column names to map the new column index to the source column index
+                    self.column_back_map[i] = data_source_names.index(
                         structure_info_column
                     )
                     self.structure_column_id = i
 
                 else:
-                    self.column_name_map[i] = self.data_columns.index(name)
-            self.structure_info_column_id = self.columns.index(structure_info_column)
+                    self.column_back_map[i] = data_source_names.index(name)
+            self.structure_info_column_id = self.data_source.column_names.index(
+                structure_info_column
+            )
         else:
-            self.column_name_map = {}
             for i, name in enumerate(self.columns):
-                self.column_name_map[i] = self.data_columns.index(name)
+                self.column_back_map[i] = self.data_source.column_names.index(name)
             self.structure_column_id = None
             self.structure_info_column_id = None
 
     def rowCount(self, /, parent=...) -> int:
-        return len(self.data_instance) if self.data_instance is not None else 0
+        return len(self.data_source)
 
     def columnCount(self, /, parent=...) -> int:
-        return len(self.columns) if self.columns is not None else 0
+        return len(self.columns)
 
     def headerData(self, section, orientation, /, role=...):
-        if role == QtCore.Qt.DisplayRole:
-            if orientation == QtCore.Qt.Horizontal:
+        if role == QtCore.Qt.ItemDataRole.DisplayRole:
+            if orientation == QtCore.Qt.Orientation.Horizontal:
                 return self.columns[section] if section < len(self.columns) else None
-            if orientation == QtCore.Qt.Vertical:
+            if orientation == QtCore.Qt.Orientation.Vertical:
                 return section + 1  # Return row number for vertical header
 
     def data(self, index, /, role=...):
@@ -369,27 +352,20 @@ class CommonDataModel(QtCore.QAbstractTableModel):
         if not index.isValid():
             return None
 
-        if role == QtCore.Qt.DecorationRole and column == self.structure_column_id:
-            data_column = self.column_name_map[column]
-            if self.type == "None":
-                return None
-            elif self.type == "ChemDataset":
-                datapoint = self.data_instance.get_value(row, data_column)
-            elif self.type == "Dataframe":
-                datapoint = self.data_instance.iloc[row, data_column]
+        data_column = self.column_back_map[column]
+        datapoint = self.data_source.get_value(row, data_column)
 
+        if (
+            role == QtCore.Qt.ItemDataRole.DecorationRole
+            and column == self.structure_column_id
+        ):
             compound_image = self.create_CompoundImage(datapoint)
             return compound_image
 
-        elif role == QtCore.Qt.DisplayRole and column != self.structure_column_id:
-            data_column = self.column_name_map[column]
-            if self.type == "None":
-                return None
-            elif self.type == "ChemDataset":
-                datapoint = self.data_instance.get_value(row, data_column)
-            elif self.type == "Dataframe":
-                datapoint = self.data_instance.iloc[row, data_column]
-
+        elif (
+            role == QtCore.Qt.ItemDataRole.DisplayRole
+            and column != self.structure_column_id
+        ):
             return str(
                 datapoint
             )  # Conversion to string not optimal, as orignial dtype might be needed later
@@ -400,10 +376,12 @@ class CommonDataModel(QtCore.QAbstractTableModel):
         return QtCore.Qt.ItemFlag.ItemIsEnabled | QtCore.Qt.ItemFlag.ItemIsSelectable
 
     @staticmethod
-    def create_CompoundImage(smiles: str) -> QPixmap:
+    def create_CompoundImage(
+        smiles: str, size: tuple[int, int] = (200, 150)
+    ) -> QPixmap:
         """Create a QPixmap from a SMILES string."""
         mol = Chem.MolFromSmiles(smiles)
-        img = rdDraw.MolToImage(mol, size=(200, 150))
+        img = rdDraw.MolToImage(mol, size=size)
         return QPixmap.fromImage(ImageQt.ImageQt(img))
 
 
@@ -413,16 +391,19 @@ class FilterModel(QtCore.QAbstractProxyModel):
     def __init__(self, sourceModel: CommonDataModel, parent=None) -> None:
         super().__init__(parent=parent)
         super().setSourceModel(sourceModel)
-        self.columns = self.sourceModel().columns
-        self.columns_with_properties = self.sourceModel().columns_with_properties
+
+        self._source_model = sourceModel
+        self.columns = self._source_model.columns
+        self.columns_with_properties: Dict[str, ColumnProperties] = (
+            self._source_model.columns_with_properties
+        )
         self.selected_rows: List[int] = []
 
-        self.structure_column_id = self.sourceModel().structure_column_id
-        self.structure_info_column_id = self.sourceModel().structure_info_column_id
-        self.get_values_for_column = self.sourceModel().get_values_for_column
+        self.structure_column_id = self._source_model.structure_column_id
+        self.structure_info_column_id = self._source_model.structure_info_column_id
 
-    def parent(self, child):
-        return QtCore.QModelIndex()
+    def parent(self, child: QModelIndex | QPersistentModelIndex, /) -> QModelIndex:  # type: ignore[invalid-method-override] due to ty incompatibility
+        return QModelIndex()
 
     def mapToSource(self, proxyIndex):
         if not proxyIndex.isValid() or self.sourceModel() is None:
@@ -439,13 +420,23 @@ class FilterModel(QtCore.QAbstractProxyModel):
         except ValueError:
             return QtCore.QModelIndex()
 
-    def rowCount(self, parent=QtCore.QModelIndex()) -> int:
+    def rowCount(
+        self, parent: QModelIndex | QPersistentModelIndex = QtCore.QModelIndex()
+    ) -> int:
         return len(self.selected_rows)
 
-    def columnCount(self, parent=QtCore.QModelIndex()) -> int:
+    def columnCount(
+        self, parent: QModelIndex | QPersistentModelIndex = QtCore.QModelIndex()
+    ) -> int:
         return self.sourceModel().columnCount(parent)
 
-    def index(self, row, column, /, parent=...):
+    def index(
+        self,
+        row: int,
+        column: int,
+        /,
+        parent: QModelIndex | QPersistentModelIndex = QModelIndex(),
+    ) -> QModelIndex:
         return self.createIndex(row, column)
 
     def data(self, proxyIndex, /, role=...):
@@ -453,85 +444,150 @@ class FilterModel(QtCore.QAbstractProxyModel):
         return self.sourceModel().data(base_index, role)
 
     @Slot(list)
-    def set_selected_rows(self, rows: List[int]) -> None:
+    def set_selected_rows(self, rows: NDArray[np.int64]) -> None:
         self.beginResetModel()
         self.selected_rows = rows.flatten().tolist()
         self.endResetModel()
         self.selection_changed.emit()
+
+    def get_values_for_column(self, column_name: str) -> NDArray:
+        return self._source_model.get_values_for_column(column_name)
 
 
 class BMUColors(QObject):
     colors_updated = Signal(list)
     cmap_updated = Signal(list)
 
-    def __init__(self, datamodel: CommonDataModel, bmu_map: BMUMap):
+    def __init__(self, datamodel: ColorDataSource, bmu_data_map: BMUMap):
         super().__init__()
         self.datamodel = datamodel
-        self.bmu_map = bmu_map
+        self.bmu_data_map = bmu_data_map
         self.properies = self.datamodel.columns_with_properties
 
         self.current_colors: List[QBrush] = [mkBrush("k")] * len(
-            self.bmu_map.bmu_map_coordinates
+            self.bmu_data_map.bmu_map_coordinates
         )
 
         # For each column, store the distribution results to safe time
-        self.bmu_ratio_mapping = {}
+        self.bmu_compositions_categorical: dict[str, BMUCompositionCategorical] = {}
+        self.bmu_compositions_continuous: dict[str, BMUCompositionContinuous] = {}
+
+        # Datapoints excluded by the active filter are excluded from color aggregation too
+        self._datapoint_filter_mask: Optional[NDArray] = None
+        self._active_continuous: Optional[tuple] = None
+        self._active_categorical: Optional[tuple] = None
+
+    @Slot(np.ndarray)
+    def set_datapoint_filter_mask(self, mask: NDArray) -> None:
+        self._datapoint_filter_mask = mask
+        # Cached compositions were aggregated under the old filter state; drop them
+        self.bmu_compositions_continuous.clear()
+        self.bmu_compositions_categorical.clear()
+
+        # Re-apply whichever coloring is currently active so the display reflects the new filter immediately
+        if self._active_continuous is not None:
+            self.update_bmu_colors_gradient(*self._active_continuous)
+        elif self._active_categorical is not None:
+            self.update_bmu_colors_categorical(*self._active_categorical)
+
+    def _filtered_bmu_ids(self, bmu_id_for_datapoint: NDArray, data: NDArray):
+        if self._datapoint_filter_mask is None:
+            return bmu_id_for_datapoint, data
+        keep = self._datapoint_filter_mask
+        return bmu_id_for_datapoint[keep], data[keep]
 
     @Slot(list)
-    def update_bmu_colors_gradient(self, property_info):
-        property_name, property_cmap = property_info
-        bmu_id_for_datapoint = self.bmu_map.index_to_unique_mapping
+    def update_bmu_colors_gradient(self, property_name, property_cmap):
 
-        if property_name not in self.bmu_ratio_mapping:
-            data = self.datamodel.get_values_for_column(property_name)
+        # If the BMU map is empty, there are no BMU coordinates to update
+        if len(self.bmu_data_map) == 0:
+            return
 
-            bmu_average = self.average_for_coordinate(data, bmu_id_for_datapoint)
+        self._active_continuous = (property_name, property_cmap)
+        self._active_categorical = None
+
+        bmu_id_for_datapoint = self.bmu_data_map.index_to_unique_mapping
+
+        if property_name not in self.bmu_compositions_continuous.keys():
+            data = np.asarray(self.datamodel.get_values_for_column(property_name))
+            num_bmus = len(self.bmu_data_map)
+            bmu_ids, data = self._filtered_bmu_ids(bmu_id_for_datapoint, data)
+
+            bmu_average = RatioWeighting.average_for_coordinate(
+                data, bmu_ids, minlength=num_bmus
+            )
+            # BMUs with no (filter-passing) datapoints have no real average; exclude
+            # them from the min/max range so they don't skew the color scale of the rest
+            has_data = np.bincount(bmu_ids, minlength=num_bmus) > 0
             # MinMax, so it is usable by colormap
-            bmu_average, minimum, maximum = min_max(bmu_average)
-            self.bmu_ratio_mapping[property_name] = (bmu_average, minimum, maximum)
+            bmu_average, minimum, maximum = min_max(bmu_average, mask=has_data)
+            self.bmu_compositions_continuous[property_name] = BMUCompositionContinuous(
+                bmu_average, minimum, maximum
+            )
 
-        bmu_average, minimum, maximum = self.bmu_ratio_mapping[property_name]
+        bmu_average, minimum, maximum = self.bmu_compositions_continuous[property_name]
         colors = property_cmap.map(bmu_average)
 
         self.cmap_updated.emit([property_cmap, minimum, maximum, property_name])
         self.recolor_bmus(colors)
 
-    @Slot(list)
-    def update_bmu_colors_categorical(self, cmap):
-        property_name, property_cmap = cmap
-        bmu_id_for_datapoint = self.bmu_map.index_to_unique_mapping
+    @Slot(str, dict, str)
+    def update_bmu_colors_categorical(
+        self,
+        property_name: str,
+        category_to_color_mapping: dict,
+        scheme: str = RatioWeighting.DEFAULT_SCHEME,
+    ):
 
-        # dont use prediefinde bins and reconstruct to ensure order of category and selected color is kept
+        self._active_categorical = (property_name, category_to_color_mapping, scheme)
+        self._active_continuous = None
+
+        bmu_id_for_datapoint = self.bmu_data_map.index_to_unique_mapping
+
+        # Don't use predefined bins and reconstruct to ensure order of category and selected color is kept
         category_bins = []
         category_colors = []
-        for category, color in property_cmap.items():
+        for category, color in category_to_color_mapping.items():
             category_bins.append(category)
             category_colors.append(color.getRgb()[:3])
         category_colors = np.asarray(category_colors, dtype=np.uint8)
 
-        if property_name not in self.bmu_ratio_mapping.keys():
-            data = self.datamodel.get_values_for_column(property_name)
+        if property_name not in self.bmu_compositions_categorical.keys():
+            data = np.asarray(self.datamodel.get_values_for_column(property_name))
 
-            num_bmus = len(self.bmu_map)
+            num_bmus = len(self.bmu_data_map)
+            bmu_ids, data = self._filtered_bmu_ids(bmu_id_for_datapoint, data)
 
             # Calculate how many datapoint of each category fall onto every BMU
-            bmu_composition_ratio = self.ratio_for_coordinate(
-                data, bmu_id_for_datapoint, category_bins, num_bmus
+            bmu_composition_ratio = RatioWeighting.ratio_for_coordinate(
+                data, bmu_ids, category_bins, num_bmus
             )
 
             # Select the most common category for each coordinate to determine primary color
             primary_catergory = np.argmax(bmu_composition_ratio, axis=1)
 
             # Calculate the alphas for the classes based on how much stronger the strongest category is than the others
-            alpha = RatioWeightingSchemes.excess_coefficient_absolute(
-                bmu_composition_ratio
-            )
+            alpha = RatioWeighting.SCHEMES[scheme](bmu_composition_ratio)
             # Map alpha values to ints in the range [0, 255]
             alpha = np.clip((alpha * 255), 0, 255).astype(np.uint8)
 
-            self.bmu_ratio_mapping[property_name] = (primary_catergory, alpha)
+            self.bmu_compositions_categorical[property_name] = (
+                BMUCompositionCategorical(bmu_composition_ratio, {scheme: alpha})
+            )
 
-        primary_catergory, alpha = self.bmu_ratio_mapping[property_name]
+        elif scheme not in self.bmu_compositions_categorical[property_name].alphas:
+            bmu_composition_ratio = self.bmu_compositions_categorical[
+                property_name
+            ].category_ratio
+            alpha = RatioWeighting.SCHEMES[scheme](bmu_composition_ratio)
+            alpha = np.clip((alpha * 255), 0, 255).astype(np.uint8)
+            self.bmu_compositions_categorical[property_name].alphas[scheme] = alpha
+
+        bmu_composition = self.bmu_compositions_categorical[property_name]
+        bmu_composition_ratio = bmu_composition.category_ratio
+        alpha = bmu_composition.alphas[scheme]
+
+        primary_catergory = np.argmax(bmu_composition_ratio, axis=1)
         colors = np.zeros((len(primary_catergory), 3), dtype=np.uint8)
 
         # Assign colors based on class_labels
@@ -548,39 +604,40 @@ class BMUColors(QObject):
         self.current_colors = [brushes[i] for i in mapping]
         self.colors_updated.emit(self.current_colors)
 
-    @staticmethod
-    def average_for_coordinate(
-        values: npt.NDArray, coordinate_id: npt.NDArray
-    ) -> npt.NDArray:
-        # Use bincount with weights to calculate sums for each unique index
-        sums = np.bincount(coordinate_id, weights=values)
-        # Use bincount to calculate counts for each unique index
-        counts = np.bincount(coordinate_id)
 
-        # Calculate average by dividing sums by counts
-        return np.divide(sums, counts, out=np.zeros_like(sums), where=counts != 0)
+class BMUFilter(QObject):
+    """
+    Computes a per-datapoint boolean "passes the active filter" mask.
+    Consumers (BMU visibility, ROI selection, BMU coloring) derive whatever
+    per-BMU or per-datapoint view they need from this single mask.
+    """
 
-    @staticmethod
-    def ratio_for_coordinate(
-        values: npt.NDArray,
-        bmu_id_for_datapoint: npt.NDArray,
-        bins: list,
-        num_bmus: int,
-    ) -> npt.NDArray:
-        # Initialize result array
-        num_bins = len(bins)
-        occurances = np.zeros((num_bmus, num_bins), dtype=int)
+    datapoint_mask_updated = Signal(np.ndarray)
 
-        _, class_as_id = np.unique_inverse(values)
-        class_as_id = np.astype(class_as_id, np.int32)
+    def __init__(self, datamodel: ColorDataSource, bmu_data_map: BMUMap):
+        super().__init__()
+        self.datamodel = datamodel
+        self.bmu_data_map = bmu_data_map
 
-        # Process each bmu
-        occurances = create_bmu_composition(
-            bmu_id_for_datapoint, class_as_id, num_bmus, num_bins
-        )
+    @Slot(str, float, float)
+    def update_filter_continuous(self, property_name: str, minimum: float, maximum: float):
+        if len(self.bmu_data_map) == 0:
+            return
 
-        counts = np.sum(occurances, axis=1)
-        ratios = occurances / counts[:, np.newaxis]
-        ratios[np.isnan(ratios)] = 0
+        data = np.asarray(self.datamodel.get_values_for_column(property_name))
+        in_range = (data >= minimum) & (data <= maximum)
+        self.datapoint_mask_updated.emit(in_range)
 
-        return ratios
+    @Slot(str, set)
+    def update_filter_categorical(self, property_name: str, selected_categories: set):
+        if len(self.bmu_data_map) == 0:
+            return
+
+        data = np.asarray(self.datamodel.get_values_for_column(property_name))
+        in_selected = np.isin(data, list(selected_categories))
+        self.datapoint_mask_updated.emit(in_selected)
+
+    @Slot()
+    def clear_filter(self):
+        num_datapoints = len(self.bmu_data_map.index_to_unique_mapping)
+        self.datapoint_mask_updated.emit(np.ones(num_datapoints, dtype=bool))
