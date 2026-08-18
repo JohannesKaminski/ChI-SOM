@@ -364,7 +364,7 @@ class StoreCreator(ABC):
                             local_range_dict_item["value_range"][0], np.min(values)
                         )
                         local_range_dict_item["value_range"][1] = max(
-                            local_range_dict_item["value_range"][0], np.max(values)
+                            local_range_dict_item["value_range"][1], np.max(values)
                         )
                     elif local_range_dict_item["type"] == "categorical":
                         local_range_dict_item["value_range"] = set.union(

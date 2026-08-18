@@ -8,7 +8,6 @@ Created on Tue Mar 13 2024
 
 import warnings
 from abc import ABC, abstractmethod
-from cmath import e
 from typing import Callable, Collection, Dict, List, Optional, Union
 
 import numpy as np
@@ -174,20 +173,21 @@ class HDF5Dataset(DatasetBase):
                     assert current_column_state.dtype == data_type
                     assert current_column_state.value_type == value_type
 
-                    current_value_range = current_column_state.value_range[1]
+                    # ColumnProperties is a NamedTuple, so the range is widened in place.
+                    # It holds all categories for categorical and [min, max] for
+                    # continuous columns; "na" columns carry no range at all.
+                    current_value_range = current_column_state.value_range
                     if value_type == "categorical":
-                        self.columns_with_properties[leaf_name].value_range[1] = list(
+                        current_value_range[:] = sorted(
                             set.union(set(current_value_range), set(value_range))
                         )
-                    elif value_type == "continous":
-                        self.columns_with_properties[leaf_name].value_range[0] = min(
+                    elif value_type == "continuous":
+                        current_value_range[0] = min(
                             current_value_range[0], value_range[0]
                         )
-                        self.columns_with_properties[leaf_name].value_range[1] = max(
+                        current_value_range[1] = max(
                             current_value_range[1], value_range[1]
                         )
-                    else:
-                        pass
 
             # Add column_id entry for group membership
             self.columns_with_properties["group"] = ColumnProperties(
