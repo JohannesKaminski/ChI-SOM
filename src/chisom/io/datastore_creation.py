@@ -612,8 +612,8 @@ class HDF5Creator(StoreCreator):
         file_hierarchy: FileList,
         out_path: str,
         leaf_map: LeafMap,
-        sep: str,
         skip_lines: int = 0,
+        sep: str = "\t",
     ) -> None:
         """
         Run creation of HDF5 storage file
@@ -626,10 +626,11 @@ class HDF5Creator(StoreCreator):
             Output path for the HDF5 files.
         leaf_map :
             Dictionary of file structure and datatypes, see How-To Guides.
-        sep :
-            Column seperator.
         skip_lines :
-            Number of lines to skip at the beginning of file, e.g. for headers.
+            Number of lines to skip at the beginning of file, e.g. for
+            headers, by default 0.
+        sep :
+            Column seperator, by default "\\t".
         """
         file_hierarchy = _parse_file_hierarchy(file_hierarchy, self.file_extensions)
         out_path = _parse_output_path(out_path, [".h5", ".hdf5"])
