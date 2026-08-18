@@ -8,6 +8,10 @@ It was specifically developed for visualising the chemical space of million-scal
 
 ![Overview of the ChI-SOM GUI](images/gui_screenshot.png "The GUI")
 
+- **Scales to millions of molecules** — a dedicated HDF5 layout gives random, millisecond-latency access to fingerprints that do not fit in memory, through the PyTorch `DataLoader` interface.
+- **CPU and CUDA backends** — numba-compiled training on either, selected with a single flag.
+- **Interactive exploration** — an interactive viewer for colouring, filtering and inspecting the molecules behind every unit of a trained map.
+
 ## Installation
 Currently, __ChI-SOM__ is only available for Linux, and Windows using _WSL2_.
 
@@ -16,21 +20,35 @@ It can be installed directly from PyPI
 pip install chi-som
 ```  
   
-For the CUDA compute backend, `numba-cuda` is required.
+The interactive viewer is an optional extra and is **not** part of the base install
+```sh
+pip install 'chi-som[gui]'
+```  
+  
+For the CUDA compute backend, `numba-cuda-mlir` is required.
 On systems running CUDA, ChI-SOM can be installed with CUDA support via
 ```sh
 pip install 'chi-som[cu12]'
 ```
-for CUDA13 or 
+for CUDA12 or 
 ```sh
 pip install 'chi-som[cu13]'
 ```
-for CUDA12  
+for CUDA13  
   
-Please refer to the [numba-cuda](https://nvidia.github.io/numba-cuda/) documentation for more complex setups.
+Please refer to the [numba-cuda-mlir](https://nvidia.github.io/numba-cuda-mlir/latest/) documentation for more complex setups.
+
+Extras combine, e.g. `pip install 'chi-som[cu12,gui]'`. Full details, including the development setup and troubleshooting, are in the [installation guide](https://kochgroup.github.io/ChI-SOM/installation/).
 
 ## Documentation
 Documentation for ChI-SOM is available at <https://kochgroup.github.io/ChI-SOM/>
+
+- [Installation](https://kochgroup.github.io/ChI-SOM/installation/)
+- [The Viewer](https://kochgroup.github.io/ChI-SOM/gui/)
+- [How-To Guides](https://kochgroup.github.io/ChI-SOM/how-to-guides/)
+- [Upgrading to 1.1](https://kochgroup.github.io/ChI-SOM/upgrading/)
+- [Limitations](https://kochgroup.github.io/ChI-SOM/limitations/)
+- [Library Reference](https://kochgroup.github.io/ChI-SOM/reference/)
 
 ## Usage example
 
@@ -62,8 +80,8 @@ N_EPOCHS = 30
 # Train the SOM for all epochs in a single call
 som.train(data, N_EPOCHS, 0.8)
 
-# Calculate the U-Matrix
-umx = som.get_umatrix()
+# Get the U-Matrix, shape (n_layers, rows, columns)
+umx = som.umatrix
 
 # Predict the best matching units and quantization errors for all data points
 bmus, qe = som.predict(data)
@@ -78,7 +96,7 @@ dataset = pd.DataFrame.from_dict(
 start_chisom_viewer(umx, bmus, dataset)
 ```
 
-For instructions on how to train SOMs on large dataset using the [PyTorch DataLoader](https://docs.pytorch.org/docs/stable/data.html) interface, please refer to the [How-To Guides](how-to-guides.md) section.
+For instructions on how to train SOMs on large dataset using the [PyTorch DataLoader](https://docs.pytorch.org/docs/stable/data.html) interface, please refer to the [How-To Guides](https://kochgroup.github.io/ChI-SOM/how-to-guides/) section.
 
 ## Viewing a trained SOM from the command line
 
@@ -88,33 +106,28 @@ Once a U-Matrix and the BMUs have been saved to disk, the viewer can be opened d
 chisom view -u umx.npy -b bmus.npy -d dataset.h5 --groups active --structure-column smiles
 ```
 
-The datapoint properties passed with `-d`/`--data` can be an HDF5 store created with `HDF5Creator` (`.h5`, `.hdf5`), delimited text (`.csv`, `.tsv`, `.txt`) or Parquet (`.parquet`, `.pq`); `--groups` applies to HDF5 stores only.
+Every argument is optional — a bare `chisom view` opens an empty window and everything can be loaded from its _File_ menu instead. See [The Viewer](https://kochgroup.github.io/ChI-SOM/gui/) for the full set of options and what the interface can do.
 
-Every argument is optional. Starting the viewer with a bare
-
-```sh
-chisom view
-```
-
-opens an empty window, and U-Matrix, BMUs and dataset can be loaded from its _File_ menu instead. The same holds for `start_chisom_viewer`, whose arguments are all optional as well.
-
-## CAVEATS
+## Caveats
 - The _Viewer_ will only work on a systems with a display attached. When running the application on a server via a remote shell and calling `start_chisom_viewer` this will usually lead to errors (`"This application failed to start because no Qt platform plugin could be initialized"`). As solutions to this are very setup dependend, the recommended approach for very large SOMs is to only train the SOM on a powerful remote machine and analyse the trained SOM with the GUI locally.
 - This software may be considered to be in beta stage. While the user-facing API is expected to remain stable up to a 2.0 release, the internal API might change at any release and can not be considered stable.  
 
+The full list is documented under [Limitations](https://kochgroup.github.io/ChI-SOM/limitations/).
 
 ## Development Setup
 ChI-SOM is developed, built, and packaged using [Astral uv](https://docs.astral.sh/uv/)
 
 To set up a development environment initalize with
 ```sh
-uv sync
+uv sync --group dev --extra gui
 ```  
 
 To build run
 ```sh
 uv build
 ```  
+
+See the [installation guide](https://kochgroup.github.io/ChI-SOM/installation/#development-setup) for the CUDA variants and the full task list.
 
 
 ## Meta
