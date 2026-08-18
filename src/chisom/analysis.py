@@ -1,6 +1,6 @@
 """
 Post-training analysis of a trained SOM: distance and (future) ranking
-queries over the SOM's U-Distance graph (see `chisom.Som.get_u_graph`).
+queries over the SOM's U-Distance graph (see `chisom.Som.u_graph`).
 """
 
 from typing import Tuple, Union, Optional, Collection, cast
@@ -20,16 +20,16 @@ def u_distance(
     Compute the u-distance(s) from source position(s) to a target position.
 
     The u-distance is the shortest-path length between a source and
-    `target` through a U-Distance graph (see `chisom.Som.get_u_graph`),
+    `target` through a U-Distance graph (see `chisom.Som.u_graph`),
     where edges are weighted by the high-dimensional distance between
     neighboring codebook vectors. Build the graph once via
-    `chisom.Som.get_u_graph` and reuse it across many `u_distance` calls
+    `chisom.Som.u_graph` and reuse it across many `u_distance` calls
     (e.g. for many BMU pairs) rather than rebuilding it per call.
 
     Parameters
     ----------
     graph : nx.Graph
-        U-Distance graph, as returned by `chisom.Som.get_u_graph`.
+        U-Distance graph, as returned by `chisom.Som.u_graph`.
     source
         Grid position(s) to compute the distance from:
             - `None`: every node in `graph`.
@@ -77,7 +77,7 @@ def u_distance(
 
 # Extension point for the planned "minimal u-ranking" feature: it will need
 # many/all-pairs shortest-path queries over the same graph built once by
-# Som.get_u_graph (e.g. ranking BMU positions by u-distance to a reference
+# Som.u_graph (e.g. ranking BMU positions by u-distance to a reference
 # set). Prefer nx.multi_source_dijkstra or single-source
 # nx.shortest_path_length(graph, source=..., weight="weight") for batches,
 # rather than calling u_distance() in a loop, to avoid recomputing

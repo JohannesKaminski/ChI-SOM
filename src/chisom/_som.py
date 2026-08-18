@@ -78,7 +78,8 @@ class Som:
         neighborhood_kernel
             Shape of the neighborhood kernel, by default "gaussian".
         use_cuda
-            If True, CUDA accelleration is used. Needs numba-cuda. By default False.
+            If True, CUDA accelleration is used. Needs numba-cuda-mlir,
+            installed via the `cu12` or `cu13` extra. By default False.
         use_local_neighborhood
             Sets a hard neighborhood cutoff, by default False.
             Only used on CPU. Significantly increases performance at cost of numerical accuracy.
@@ -247,7 +248,9 @@ class Som:
         Raises
         ------
         ValueError
-            If sigma is given and is less than or equal to 0.
+            If `sigma` is given and is less than or equal to `sigma_end`.
+        ValueError
+            If `alpha` is given and is less than or equal to `alpha_end`.
         ValueError
             If `alpha_decay` or `sigma_decay` is not "linear" or
             "exponential".
@@ -413,9 +416,9 @@ class Som:
         are grid positions (row, column) and whose edges connect toroidal
         grid neighbors, weighted by the high-dimensional distance between
         the corresponding codebook vectors, the same per-neighbor
-        distances used to build the U-Matrix. Build the graph once and
-        reuse it for repeated `chisom.analysis.u_distance` (or future
-        ranking) queries rather than calling this method repeatedly.
+        distances used to build the U-Matrix. The graph is cached, but bind
+        it to a local name and reuse that for repeated
+        `chisom.analysis.u_distance` (or future ranking) queries.
 
         Returns
         -------

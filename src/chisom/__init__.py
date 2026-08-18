@@ -18,8 +18,8 @@ def __getattr__(name):
             from ._interface.gui import start_chisom_viewer
         except ImportError as exc:
             raise ImportError(
-                "The interactive viewer rquiere the optional GUI dependencies. "
-                "Install them with `pip install chisom[gui]`"
+                "The interactive viewer requires the optional GUI dependencies. "
+                "Install them with `pip install 'chi-som[gui]'`"
             ) from exc
 
         return start_chisom_viewer

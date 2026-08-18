@@ -87,7 +87,7 @@ def plot_som(
     Parameters
     ----------
     umatrix : UMatrix
-        U-matrix as returned by ``Som.get_umatrix()``. Either 2D
+        U-matrix as returned by the ``Som.umatrix`` property. Either 2D
         (rows, columns) or 3D (layers, rows, columns).
     bmu_coordinates : NDArray[np.uint16], optional
         (N, 2) array of (row, column) BMU coordinates as returned by
