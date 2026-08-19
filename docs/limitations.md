@@ -41,6 +41,8 @@ That heuristic can misjudge a column whose variety only appears later in the fil
 
 The U-Matrix and the U-Distance graph both assume a **toroidal** map: the top edge is adjacent to the bottom, and the left edge to the right. Distances and neighbourhoods wrap accordingly. This matches the default `euclidean_toroid` map distance, but be aware of it when interpreting map edges — there are, in effect, no edges.
 
+A single rectangle cannot show that wrap, so a cluster straddling an edge reads as two unrelated clusters in opposite corners. `plot_som(..., tiles=(2, 2))` draws the map [repeated as four tiles](how-to-guides.md#showing-the-toroidal-wrap-around) to make it visible.
+
 ## Data store compatibility
 
 HDF5 stores written by &#7521;-SOM 1.0 may carry incorrect value ranges for continuous columns. See [Upgrading to 1.1](upgrading.md) for what to do about it.
