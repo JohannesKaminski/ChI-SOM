@@ -136,6 +136,75 @@ The figure sizes itself from the lattice, so non-square and very large maps come
 
 Passing `figsize` or `marker_size` explicitly opts back out of the grid-derived sizing. Passing `ax` draws into an existing axes instead of creating a figure.
 
+### Hiding the chrome
+A map carries two independent explanatory elements, each switchable on its own:
+
+| Parameter | Default | Hides |
+|---|---|---|
+| `umatrix_colorbar` | `True` | The "U-height" colorbar for the background map |
+| `color_key` | `True` | The key explaining `color_by` — the legend when the column is categorical, the colorbar when it is continuous |
+
+`color_key` covers both forms because they play the same role: whichever one applies to your column, it is the key to the marker colors. Turning it off leaves the markers coloured exactly as before — only the key disappears — which is what you want when the encoding is already explained in a figure caption, or when a panel of maps shares a single key.
+
+```python
+fig = plot_som(
+    som.umatrix,
+    bmu_coordinates=bmus,
+    data=ds,
+    color_by="Activity",
+    umatrix_colorbar=False,
+    color_key=False,
+    save_as="som_bare.png",
+)
+```
+
+When neither element is drawn, the width normally reserved for chrome is dropped too, so the map fills the canvas instead of leaving an empty margin.
+
+### Concentrating the colormap on a band of U-heights
+U-heights are normalized to 0–1, and by default the colormap is stretched across that whole range. On a map whose interesting structure sits in a narrow band, that spends most of the colormap on heights you do not care about and flattens the contrast where you do.
+
+`umatrix_range` picks the band the colormap is spent on instead:
+
+```python
+fig = plot_som(
+    som.umatrix,
+    bmu_coordinates=bmus,
+    umatrix_range=(0.2, 0.9),
+    save_as="som_contrast.png",
+)
+```
+
+Everything below the low end is drawn in the colormap's minimum colour and everything above the high end in its maximum colour, so nothing is dropped from the picture — it is saturated rather than clipped away. The colorbar is drawn with an arrowed end wherever the range does that, marking that the extreme colour stands for "at most 0.2" / "at least 0.9" rather than an exact value.
+
+This only rescales the colour mapping. The underlying U-matrix is untouched, so BMU positions, the U-Distance graph, and everything else are unaffected.
+
+
+## Showing the toroidal wrap-around
+The map is [toroidal](limitations.md#map-topology) — its top edge is adjacent to its bottom edge, and its left edge to its right. Drawn as a single rectangle that is invisible, so a cluster sitting across an edge looks like two unrelated clusters in opposite corners of the map.
+
+`tiles` repeats the map along `(rows, columns)`, which puts such a cluster back together inside one of the copies:
+
+```python
+fig = plot_som(
+    som.umatrix,
+    bmu_coordinates=bmus,
+    tiles=(2, 2),
+    save_as="som_four_tile.png",
+)
+```
+
+Thin red lines mark where the tiles meet, so it stays clear which part of the picture is one period of the map and which is repetition.
+
+| Parameter | Default | Effect |
+|---|---|---|
+| `tiles` | `(1, 1)` | Copies of the map along (rows, columns); `(2, 2)` is the four-tile view |
+| `tile_seam_color` | `"red"` | Color of the tile boundaries; `None` omits them |
+| `tile_seam_width` | `0.8` | Width of the tile boundaries in points |
+
+The repetition is seamless: the U-Matrix interpolation is already periodic, so structures run continuously across the seams rather than breaking at them. BMUs are drawn once per tile, but the legend, the colorbar and the color scale still describe the map itself — they do not count the copies.
+
+Because the auto-derived `figsize` grows with the tiling, each grid cell keeps its usual rendered size and `tiles=(2, 2)` yields roughly four times the canvas area. Pass `figsize` explicitly to fit the tiled map into a fixed canvas instead.
+
 
 ## Using less cores than available
 When &#7521;-SOM should use less core than are currently available on the machine, the desired number of cores to use (`n_cores`) can be set via `numba`, either programmatically

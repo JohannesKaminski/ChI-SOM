@@ -52,11 +52,17 @@ def plot_som(
     category_colors: Optional[Mapping[Any, Any]] = None,
     cmap: Union[str, Colormap] = "viridis",
     umatrix_cmap: Optional[Union[str, Colormap]] = None,
+    umatrix_range: tuple[float, float] = (0.0, 1.0),
+    umatrix_colorbar: bool = True,
     alpha_scheme: Optional[str] = "excess_absolute",
     layer: int = -1,
     scaling_factor: int = 3,
+    tiles: tuple[int, int] = (1, 1),
+    tile_seam_color: Optional[str] = "red",
+    tile_seam_width: float = 0.8,
     marker_size: Optional[float] = None,
     marker_cell_fraction: float = 0.7,
+    color_key: bool = True,
     legend_ncol: Optional[int] = None,
     legend_label_maxlen: int = 24,
     chrome_scale: float = 1.0,
@@ -83,6 +89,15 @@ def plot_som(
     map, its markers, and its chrome proportionate to each other regardless
     of how big or how non-square a given SOM's lattice is. Pass explicit
     `figsize`/`marker_size` to opt back into fixed, grid-independent sizing.
+
+    The lattice is toroidal — its top edge is adjacent to its bottom edge,
+    and its left edge to its right — which a single rectangle cannot show:
+    a cluster straddling an edge looks like two unrelated clusters in
+    opposite corners. Pass `tiles=(2, 2)` for a four-tile view that repeats
+    the map twice in each direction, so such a cluster appears whole in one
+    of the tiles; thin red lines mark where the tiles meet. Note that the
+    auto-derived `figsize` grows with the tiling, keeping each grid cell at
+    its usual rendered size.
 
     Parameters
     ----------
@@ -112,6 +127,20 @@ def plot_som(
     umatrix_cmap : str or Colormap, optional
         Matplotlib colormap for the U-matrix. Defaults to the Earth
         colormap of the viewer.
+    umatrix_range : tuple of float
+        (low, high) U-heights the colormap is stretched across. U-heights
+        are normalized to 0-1, so the default ``(0.0, 1.0)`` spends the
+        full colormap on the full range. Narrowing it, e.g. to
+        ``(0.2, 0.9)``, spends the colormap on that band instead and so
+        pulls contrast into it; everything below `low` is drawn in the
+        colormap's minimum color and everything above `high` in its maximum
+        color. The colorbar is drawn with arrowed ends wherever the range
+        clips, to mark that those colors stand for "at least"/"at most".
+    umatrix_colorbar : bool
+        Whether to draw the "U-height" colorbar alongside the map. Turn it
+        off for a bare map, or where the absolute U-heights carry no
+        meaning for the reader. Does not affect the separate colorbar drawn
+        for continuous `color_by` coloring.
     alpha_scheme : {"gini", "excess_absolute", "excess_relative"}, optional
         Weighting scheme used to encode the dominance of the primary
         category as marker opacity (see ``RatioWeighting``). If None,
@@ -120,6 +149,19 @@ def plot_som(
         Layer to display for a 3D U-matrix.
     scaling_factor : int
         Upscaling factor for the U-matrix interpolation.
+    tiles : tuple of int
+        How often to repeat the map along (rows, columns), exposing its
+        toroidal topology. The default ``(1, 1)`` draws the lattice once;
+        ``(2, 2)`` gives the four-tile view. Repetition is seamless, as the
+        U-matrix interpolation is already periodic. BMUs are drawn once per
+        tile, but the legend, colorbar, and color scale are unaffected —
+        they describe the map, not the number of copies of it.
+    tile_seam_color : str, optional
+        Color of the thin lines marking the boundaries between tiles. Pass
+        None to omit them. Ignored when `tiles` is ``(1, 1)``, as there are
+        no interior boundaries to draw.
+    tile_seam_width : float
+        Line width in points of the tile boundaries.
     marker_size : float, optional
         BMU marker diameter in points. By default (None), it is derived
         from the rendered size of one SOM grid cell (see
@@ -130,8 +172,16 @@ def plot_som(
         When `marker_size` is auto-derived, the fraction of one rendered
         grid cell's size (the smaller of its width/height in points) that
         the marker diameter should occupy. Ignored if `marker_size` is set.
+    color_key : bool
+        Whether to draw the key explaining `color_by` — the legend for
+        categorical coloring, the colorbar for continuous coloring. Turn it
+        off where the encoding is already explained elsewhere, e.g. in a
+        figure caption or across a panel of maps sharing one key. Has no
+        effect without `color_by`, and does not affect the separate
+        U-height colorbar (see `umatrix_colorbar`).
     legend_ncol : int, optional
-        Number of columns for the categorical-coloring legend. By default
+        Number of columns for the categorical-coloring legend. Ignored when
+        `color_key` is False. By default
         (None), chosen automatically so the legend wraps into additional
         columns rather than growing arbitrarily tall for large category
         counts (see `_auto_legend_ncol`).
@@ -177,16 +227,33 @@ def plot_som(
         )
     if scaling_factor < 1:
         raise ValueError("Scaling factor must be greater than 0")
+    if len(tiles) != 2 or any(
+        not isinstance(t, (int, np.integer)) or t < 1 for t in tiles
+    ):
+        raise ValueError("tiles must be two integers greater than 0")
+    umatrix_low, umatrix_high = umatrix_range
+    if not umatrix_low < umatrix_high:
+        raise ValueError("umatrix_range must be (low, high) with low < high")
 
     selected_values = _umatrix[layer]
     rows, columns = selected_values.shape
+    tile_rows, tile_columns = tiles
+    total_rows, total_columns = rows * tile_rows, columns * tile_columns
+
+    # The `color_by` key is drawn only when BMUs are actually colored by
+    # something; with neither that nor the U-height colorbar, there is no
+    # chrome to reserve width for
+    draws_chrome = umatrix_colorbar or (
+        color_key and bmu_coordinates is not None and color_by is not None
+    )
 
     if ax is None:
         own_figure = True
         if figsize is None:
+            chrome_allowance = CHROME_ALLOWANCE_IN * chrome_scale if draws_chrome else 0
             figsize = (
-                columns * cell_size_in + CHROME_ALLOWANCE_IN * chrome_scale,
-                rows * cell_size_in,
+                total_columns * cell_size_in + chrome_allowance,
+                total_rows * cell_size_in,
             )
         fig, ax = plt.subplots(figsize=figsize, dpi=dpi, layout="compressed")
     else:
@@ -196,30 +263,37 @@ def plot_som(
             raise ValueError("ax must belong to a Figure")
         fig = root_figure
 
-    ax.set_box_aspect(rows / columns)
+    ax.set_box_aspect(total_rows / total_columns)
 
-    scaled_values = interpolate_matrix(selected_values, scaling_factor)
+    # `interpolate_matrix` returns exactly one period of a periodic
+    # interpolant, so repeating its output is seamless across the wrap
+    scaled_values = np.tile(interpolate_matrix(selected_values, scaling_factor), tiles)
     image = ax.imshow(
         scaled_values,
         cmap=EarthColorMap if umatrix_cmap is None else umatrix_cmap,
         # With this extent, pixel centers sit at half-integers, so BMU
         # markers land exactly where the viewer places them
-        extent=(0, columns * scaling_factor, rows * scaling_factor, 0),
+        extent=(0, total_columns * scaling_factor, total_rows * scaling_factor, 0),
         origin="upper",
-        vmin=0,
-        vmax=1,
+        vmin=umatrix_low,
+        vmax=umatrix_high,
         aspect="equal",
         interpolation="nearest",
     )
     ax.set_xticks([])
     ax.set_yticks([])
-    fig.colorbar(
-        image,
-        ax=ax,
-        label="U-height",
-        fraction=DEFAULT_COLORBAR_FRACTION * chrome_scale,
-        pad=DEFAULT_COLORBAR_PAD * chrome_scale,
-    )
+    if umatrix_colorbar:
+        fig.colorbar(
+            image,
+            ax=ax,
+            label="U-height",
+            # U-heights are normalized to 0-1, so a narrowed range clips
+            # real data; the arrowed end says so rather than implying the
+            # extreme color is an exact value
+            extend=_colorbar_extend(umatrix_low, umatrix_high),
+            fraction=DEFAULT_COLORBAR_FRACTION * chrome_scale,
+            pad=DEFAULT_COLORBAR_PAD * chrome_scale,
+        )
 
     if bmu_coordinates is not None:
         unique_bmu_coordinates, index_to_unique_mapping = np.unique(
@@ -248,53 +322,57 @@ def plot_som(
                     category_colors,
                     alpha_scheme,
                 )
-                handles = [
-                    Line2D(
-                        [],
-                        [],
-                        linestyle="",
-                        marker="o",
-                        markerfacecolor=resolved_colors[category],
-                        markeredgecolor="black",
-                        label=_truncate_label(str(category), legend_label_maxlen),
+                if color_key:
+                    handles = [
+                        Line2D(
+                            [],
+                            [],
+                            linestyle="",
+                            marker="o",
+                            markerfacecolor=resolved_colors[category],
+                            markeredgecolor="black",
+                            label=_truncate_label(str(category), legend_label_maxlen),
+                        )
+                        for category in categories
+                    ]
+                    ncol = (
+                        legend_ncol
+                        if legend_ncol is not None
+                        else _auto_legend_ncol(len(categories))
                     )
-                    for category in categories
-                ]
-                ncol = (
-                    legend_ncol
-                    if legend_ncol is not None
-                    else _auto_legend_ncol(len(categories))
-                )
-                if own_figure:
-                    fig.legend(
-                        handles=handles,
-                        title=color_by,
-                        loc="outside right upper",
-                        ncol=ncol,
-                        fontsize=legend_fontsize,
-                    )
-                else:
-                    ax.legend(
-                        handles=handles,
-                        title=color_by,
-                        ncol=ncol,
-                        fontsize=legend_fontsize,
-                    )
+                    if own_figure:
+                        fig.legend(
+                            handles=handles,
+                            title=color_by,
+                            loc="outside right upper",
+                            ncol=ncol,
+                            fontsize=legend_fontsize,
+                        )
+                    else:
+                        ax.legend(
+                            handles=handles,
+                            title=color_by,
+                            ncol=ncol,
+                            fontsize=legend_fontsize,
+                        )
             else:
                 property_cmap = plt.get_cmap(cmap) if isinstance(cmap, str) else cmap
                 face_colors, norm = _continuous_face_colors(
                     values, np.astype(index_to_unique_mapping, np.uint32), property_cmap
                 )
-                fig.colorbar(
-                    ScalarMappable(norm=norm, cmap=property_cmap),
-                    ax=ax,
-                    label=color_by,
-                    fraction=DEFAULT_COLORBAR_FRACTION * chrome_scale,
-                    pad=DEFAULT_COLORBAR_PAD * chrome_scale,
-                )
+                if color_key:
+                    fig.colorbar(
+                        ScalarMappable(norm=norm, cmap=property_cmap),
+                        ax=ax,
+                        label=color_by,
+                        fraction=DEFAULT_COLORBAR_FRACTION * chrome_scale,
+                        pad=DEFAULT_COLORBAR_PAD * chrome_scale,
+                    )
 
         if marker_size is None:
-            cell_pt = _cell_size_points(fig, ax, rows, columns)
+            # Sized against the tiled grid, so a marker keeps covering
+            # `marker_cell_fraction` of one cell rather than of one tile
+            cell_pt = _cell_size_points(fig, ax, total_rows, total_columns)
             effective_marker_size = cell_pt * marker_cell_fraction * chrome_scale
         else:
             effective_marker_size = marker_size
@@ -302,19 +380,113 @@ def plot_som(
         # stroke (the old default) can swamp a small auto-derived marker.
         effective_linewidth = float(np.clip(effective_marker_size * 0.12, 0.5, 2.0))
 
+        tiled_coordinates = _tile_marker_positions(
+            map_coordinates, tiles, rows, columns, scaling_factor
+        )
+        if not isinstance(face_colors, str):
+            face_colors = np.tile(face_colors, (tile_rows * tile_columns, 1))
+
         ax.scatter(
-            map_coordinates[:, 1],
-            map_coordinates[:, 0],
+            tiled_coordinates[:, 1],
+            tiled_coordinates[:, 0],
             s=effective_marker_size**2,
             facecolors=face_colors,
             edgecolors="black",
             linewidths=effective_linewidth,
         )
 
+    _draw_tile_seams(
+        ax, tiles, rows, columns, scaling_factor, tile_seam_color, tile_seam_width
+    )
+
     if save_as is not None:
         fig.savefig(save_as)
 
     return fig
+
+
+def _colorbar_extend(low: float, high: float) -> str:
+    """
+    Which ends of the U-height colorbar should be drawn as arrows.
+
+    U-heights are normalized to 0-1, so a range narrower than that on a
+    given side genuinely clips data there and the corresponding end stands
+    for "at least"/"at most" rather than an exact value.
+    """
+    clips_low, clips_high = low > 0.0, high < 1.0
+    if clips_low and clips_high:
+        return "both"
+    if clips_low:
+        return "min"
+    if clips_high:
+        return "max"
+    return "neither"
+
+
+def _tile_marker_positions(
+    map_coordinates: NDArray,
+    tiles: tuple[int, int],
+    rows: int,
+    columns: int,
+    scaling_factor: int,
+) -> NDArray:
+    """
+    Repeat BMU positions once per tile, each copy offset by whole map periods.
+
+    Stacked in row-major tile order, so `np.tile`-ing a per-BMU face color
+    array by the tile count keeps colors aligned with positions.
+    """
+    tile_rows, tile_columns = tiles
+    if tile_rows == 1 and tile_columns == 1:
+        return map_coordinates
+
+    row_period = rows * scaling_factor
+    column_period = columns * scaling_factor
+    # In float32, since offsetting float16 coordinates by whole map periods
+    # would push them into a range where the half-pixel centering baked in
+    # by `bmu_raw_to_map_coordinates` no longer survives rounding
+    base = np.astype(map_coordinates, np.float32)
+    return np.concatenate(
+        [
+            base + (tile_row * row_period, tile_column * column_period)
+            for tile_row in range(tile_rows)
+            for tile_column in range(tile_columns)
+        ]
+    )
+
+
+def _draw_tile_seams(
+    ax: Axes,
+    tiles: tuple[int, int],
+    rows: int,
+    columns: int,
+    scaling_factor: int,
+    color: Optional[str],
+    width: float,
+) -> None:
+    """
+    Mark the interior boundaries between repeated copies of the map.
+
+    Only the seams *between* tiles are drawn, never an outer border, so an
+    untiled map keeps its unframed look. Drawn above the image and the BMU
+    markers to stay legible where markers are dense. Adds no chrome, hence
+    it cannot invalidate the layout `_cell_size_points` measured against.
+    """
+    if color is None:
+        return
+
+    tile_rows, tile_columns = tiles
+    for tile_column in range(1, tile_columns):
+        ax.axvline(
+            tile_column * columns * scaling_factor,
+            color=color,
+            linewidth=width,
+            zorder=3,
+        )
+    for tile_row in range(1, tile_rows):
+        ax.axhline(
+            tile_row * rows * scaling_factor, color=color, linewidth=width, zorder=3
+        )
 
 
 def _get_column_values(
